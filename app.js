@@ -80,7 +80,8 @@
     authResolve: null,
     authReject: null,
     authTimer: null,
-    tokenExpiresAt: 0
+    tokenExpiresAt: 0,
+    googleIdentityReady: false
   };
 
   const el = {};
@@ -110,23 +111,21 @@
 
     state.authenticating = true;
     applyModeUi();
-    setLoading(true, "이전 Google 연결을 자동으로 확인하는 중입니다.");
+    setLoading(true, "Google 인증 모듈을 준비하는 중입니다.");
     try {
       await waitForGoogleIdentity();
       initializeTokenClient();
-      await requestGoogleToken({ silent: true });
-      await fetchUserEmail();
-      applyModeUi();
-      await loadData();
+      state.googleIdentityReady = true;
     } catch (error) {
-      state.token = null;
-      state.tokenExpiresAt = 0;
-      applyModeUi();
-      setStatus("Google 연결 필요 · 처음 한 번만 연결하면 다음 접속부터 자동으로 시도합니다.");
+      state.googleIdentityReady = false;
+      handleError(error);
     } finally {
       state.authenticating = false;
       applyModeUi();
       setLoading(false);
+      if (state.googleIdentityReady && !state.token) {
+        setStatus("Google 연결 버튼을 눌러 주세요 · 승인 이력이 있으면 계정 선택 없이 연결됩니다.");
+      }
     }
   }
 
@@ -1382,7 +1381,7 @@
     };
   }
 
-  async function connectGoogle() {
+  function connectGoogle() {
     if (state.demoMode) {
       showToast("현재 데모 모드입니다. config.js에서 DEMO_MODE를 false로 변경하세요.");
       return;
@@ -1395,17 +1394,36 @@
       showToast(`${state.userEmail || "Google 계정"}으로 이미 연결되어 있습니다.`);
       return;
     }
+    if (!window.google?.accounts?.oauth2) {
+      showToast("Google 인증 모듈을 아직 불러오는 중입니다. 잠시 후 다시 눌러 주세요.", true);
+      return;
+    }
 
+    state.googleIdentityReady = true;
     state.authenticating = true;
     applyModeUi();
     setLoading(true, "Google 계정을 연결하는 중입니다.");
+
+    let tokenPromise;
     try {
-      await waitForGoogleIdentity();
       initializeTokenClient();
-      await requestGoogleToken({ silent: false });
+      // 팝업 차단을 피하려면 requestAccessToken()을 클릭 이벤트 안에서 즉시 호출해야 합니다.
+      tokenPromise = requestGoogleToken({ silent: false });
+    } catch (error) {
+      finishGoogleConnection(null, error);
+      return;
+    }
+    finishGoogleConnection(tokenPromise);
+  }
+
+  async function finishGoogleConnection(tokenPromise, immediateError = null) {
+    try {
+      if (immediateError) throw immediateError;
+      await tokenPromise;
       await fetchUserEmail();
       applyModeUi();
-      await loadData();
+      if (state.dirty && state.weeks.length) await saveNow();
+      else await loadData();
     } catch (error) {
       if (error?.code !== "popup_closed") handleError(error);
     } finally {
@@ -1433,8 +1451,14 @@
       include_granted_scopes: true,
       callback: handleGoogleTokenResponse,
       error_callback: error => {
-        const authError = new Error(error?.type === "popup_closed" ? "Google 로그인 창이 닫혔습니다." : "Google 인증 창을 열지 못했습니다.");
-        authError.code = error?.type || "oauth_popup_error";
+        const type = error?.type || "oauth_popup_error";
+        let message = "Google 인증 중 알 수 없는 오류가 발생했습니다.";
+        if (type === "popup_closed") message = "Google 로그인 창이 닫혔습니다.";
+        if (type === "popup_failed_to_open") {
+          message = "브라우저가 Google 인증 팝업을 차단했습니다. 주소창의 팝업 차단 아이콘에서 이 사이트의 팝업을 허용한 뒤 다시 눌러 주세요.";
+        }
+        const authError = new Error(message);
+        authError.code = type;
         settleAuthRequest(authError);
       }
     });
@@ -1491,20 +1515,12 @@
   }
 
   async function refreshGoogleTokenSilently() {
-    if (state.demoMode || !validGoogleConfig()) return false;
-    try {
-      await waitForGoogleIdentity();
-      initializeTokenClient();
-      await requestGoogleToken({ silent: true });
-      await fetchUserEmail();
-      applyModeUi();
-      return true;
-    } catch (_) {
-      state.token = null;
-      state.tokenExpiresAt = 0;
-      applyModeUi();
-      return false;
-    }
+    // Google Identity Services의 토큰 팝업은 사용자 클릭에서 실행해야 안정적으로 열립니다.
+    // 정적 GitHub Pages에서는 백그라운드 무소음 재발급을 시도하지 않습니다.
+    state.token = null;
+    state.tokenExpiresAt = 0;
+    applyModeUi();
+    return false;
   }
 
   async function fetchUserEmail() {
@@ -1612,7 +1628,7 @@
       el.modeBadge.textContent = "GOOGLE";
       el.connectButton.textContent = "연결 확인 중…";
       el.connectButton.disabled = true;
-      setStatus("이전 Google 연결을 자동으로 확인하는 중입니다.");
+      setStatus("Google 인증을 준비하는 중입니다.");
     } else if (state.token) {
       el.modeBadge.textContent = state.userEmail || "CONNECTED";
       el.connectButton.textContent = "연결됨";
