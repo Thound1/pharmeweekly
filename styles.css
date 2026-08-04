@@ -675,3 +675,120 @@ textarea::-webkit-scrollbar { display: none; }
 .kpi-table td:nth-child(6) { white-space: normal; }
 .kpi-table .rate-pill { min-width: calc(58px * var(--text-scale)); padding: calc(5px * var(--text-scale)) calc(7px * var(--text-scale)); line-height: 1.35; }
 #connectButton:disabled { cursor: wait; opacity: .72; }
+
+/* v1.1.3: 연속된 동일 작업명을 사용자 화면에서 하나의 병합 셀처럼 표시 */
+.task-list {
+  --task-grid-columns: 27px minmax(125px,.75fr) minmax(310px,2.35fr) 76px 27px;
+}
+.task-card { grid-template-columns: var(--task-grid-columns); }
+.task-merge-group {
+  position: relative;
+  display: grid;
+  grid-template-columns: var(--task-grid-columns);
+  grid-auto-rows: auto;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid #bdb8ae;
+  border-radius: 5px;
+  background: #fff;
+  box-shadow: 0 3px 9px rgba(48,45,39,.04);
+}
+.task-merge-group .task-card-merged {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: var(--task-grid-columns);
+  min-width: 0;
+  border: 0;
+  border-radius: 0;
+  background: #fff;
+  box-shadow: none;
+}
+.task-merge-group .task-card-merged:nth-of-type(odd) { background: #fcfbf7; }
+.task-merge-group .task-card-merged + .task-card-merged { border-top: 1px solid #ddd8cf; }
+.task-merge-group .task-card-merged:hover {
+  position: relative;
+  z-index: 2;
+  border-color: transparent;
+  background: #fffef9;
+  box-shadow: inset 0 0 0 1px rgba(49,95,80,.16);
+}
+.task-merge-group .task-card-merged.drag-over { box-shadow: inset 0 3px 0 var(--brand); }
+.task-merge-group .task-title-slot {
+  visibility: hidden;
+  pointer-events: none;
+}
+.task-merge-title-cell {
+  position: relative;
+  z-index: 4;
+  grid-column: 2;
+  align-self: stretch;
+  display: grid;
+  grid-template-columns: auto minmax(0,1fr);
+  grid-template-rows: auto 1fr;
+  min-width: 0;
+  min-height: 100%;
+  border-right: 1px solid #d5d0c7;
+  background: #f5f8f5;
+  box-shadow: inset -1px 0 0 rgba(49,95,80,.04);
+}
+.task-merge-title-cell .task-title-marker {
+  grid-column: 1;
+  grid-row: 1;
+}
+.task-merge-title-cell .task-merged-title-field {
+  grid-column: 2;
+  grid-row: 1;
+  width: 100%;
+  min-height: calc(42px * var(--text-scale));
+  border-right: 0;
+  background: transparent;
+  padding-left: calc(5px * var(--text-scale));
+  font-weight: 850;
+  line-height: 1.55;
+}
+.task-merge-title-cell .task-merged-title-field:focus { background: #fffdf4; }
+.task-merge-count {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  align-self: end;
+  justify-self: start;
+  margin: 0 calc(8px * var(--text-scale)) calc(8px * var(--text-scale));
+  padding: calc(2px * var(--text-scale)) calc(6px * var(--text-scale));
+  border: 1px solid rgba(49,95,80,.22);
+  border-radius: 999px;
+  color: var(--brand-deep);
+  background: rgba(255,255,255,.72);
+  font-size: calc(8px * var(--text-scale));
+  font-weight: 800;
+  line-height: 1.35;
+  user-select: none;
+}
+.task-merge-group .task-card-merged .task-drag,
+.task-merge-group .task-card-merged .task-menu-button { position: relative; z-index: 5; }
+
+@media (max-width: 640px) {
+  .task-list { --task-grid-columns: 24px minmax(0,1fr) 66px 24px; }
+  .task-merge-group {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 8px;
+    overflow: visible;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  .task-merge-title-cell { display: none; }
+  .task-merge-group .task-card-merged {
+    grid-column: 1;
+    grid-row: auto !important;
+    grid-template-columns: var(--task-grid-columns);
+    border: 1px solid #c3beb5;
+    border-radius: 4px;
+  }
+  .task-merge-group .task-card-merged + .task-card-merged { border-top: 1px solid #c3beb5; }
+  .task-merge-group .task-title-slot {
+    visibility: visible;
+    pointer-events: auto;
+  }
+}

@@ -443,7 +443,9 @@
       empty.textContent = "등록된 작업 없음";
       list.appendChild(empty);
     } else {
-      tasks.forEach(task => list.appendChild(buildTaskCard(task)));
+      splitConsecutiveTaskRuns(tasks).forEach(run => {
+        list.appendChild(run.length > 1 ? buildMergedTaskGroup(run) : buildTaskCard(run[0]));
+      });
     }
     list.addEventListener("dragover", event => dragOverTaskList(event, list));
     list.addEventListener("dragleave", event => { if (!list.contains(event.relatedTarget)) list.classList.remove("drag-over"); });
@@ -452,10 +454,71 @@
     return pane;
   }
 
-  function buildTaskCard(task) {
+  function splitConsecutiveTaskRuns(tasks) {
+    const runs = [];
+    tasks.forEach(task => {
+      const title = normalizedTaskTitle(task);
+      const lastRun = runs[runs.length - 1];
+      const lastTitle = lastRun?.length ? normalizedTaskTitle(lastRun[0]) : "";
+      if (title && lastRun && title === lastTitle) lastRun.push(task);
+      else runs.push([task]);
+    });
+    return runs;
+  }
+
+  function normalizedTaskTitle(task) {
+    return stripTaskMarker(task?.title || "").trim();
+  }
+
+  function buildMergedTaskGroup(tasks) {
+    const group = document.createElement("div");
+    group.className = "task-merge-group";
+    group.dataset.mergedTitle = normalizedTaskTitle(tasks[0]);
+    group.dataset.mergedCount = String(tasks.length);
+    group.style.setProperty("--merged-row-count", String(tasks.length));
+
+    const mergedTitle = document.createElement("div");
+    mergedTitle.className = "task-title-wrap task-merge-title-cell";
+    mergedTitle.style.gridRow = `1 / span ${tasks.length}`;
+
+    const marker = document.createElement("span");
+    marker.className = "task-title-marker";
+    marker.setAttribute("aria-hidden", "true");
+    marker.textContent = "■";
+
+    const title = document.createElement("textarea");
+    title.className = "task-field task-title-field task-merged-title-field auto-grow";
+    title.rows = 1;
+    title.value = normalizedTaskTitle(tasks[0]);
+    title.placeholder = "작업명";
+    title.setAttribute("aria-label", `${title.value} 공통 작업명 · ${tasks.length}개 일정`);
+    bindMergedTaskTitle(title, tasks, group);
+
+    const count = document.createElement("span");
+    count.className = "task-merge-count";
+    count.textContent = `${tasks.length}개 일정`;
+    mergedTitle.append(marker, title, count);
+    group.appendChild(mergedTitle);
+
+    tasks.forEach((task, index) => {
+      group.appendChild(buildTaskCard(task, {
+        merged: true,
+        mergeIndex: index,
+        mergeCount: tasks.length
+      }));
+    });
+    return group;
+  }
+
+  function buildTaskCard(task, options = {}) {
     const card = document.createElement("div");
-    card.className = "task-card";
+    card.className = `task-card${options.merged ? " task-card-merged" : ""}`;
     card.dataset.taskId = task.task_id;
+    if (options.merged) {
+      card.dataset.mergedTitle = normalizedTaskTitle(task);
+      card.dataset.mergeIndex = String(options.mergeIndex || 0);
+      card.style.gridRow = String((options.mergeIndex || 0) + 1);
+    }
 
     const handle = dragHandle("작업 순서 변경");
     handle.classList.add("task-drag");
@@ -463,7 +526,7 @@
     handle.addEventListener("dragend", () => finishDrag(card));
 
     const titleWrap = document.createElement("div");
-    titleWrap.className = "task-title-wrap";
+    titleWrap.className = `task-title-wrap${options.merged ? " task-title-slot" : ""}`;
     const marker = document.createElement("span");
     marker.className = "task-title-marker";
     marker.setAttribute("aria-hidden", "true");
@@ -503,6 +566,22 @@
     card.addEventListener("drop", event => dropTaskOnTask(event, task, card));
     card.append(handle, titleWrap, details, due, menu);
     return card;
+  }
+
+  function bindMergedTaskTitle(control, tasks, group) {
+    control.addEventListener("input", () => {
+      const value = stripTaskMarker(control.value);
+      if (control.value !== value) control.value = value;
+      tasks.forEach(task => { task.title = value; });
+      group.dataset.mergedTitle = value.trim();
+      group.querySelectorAll(".task-title-slot .task-title-field").forEach(field => {
+        field.value = value;
+        autoResize(field);
+      });
+      touch();
+      autoResize(control);
+    });
+    control.addEventListener("blur", () => scheduleAutoSave(true));
   }
 
   function bindTaskField(control, task, field) {
@@ -632,6 +711,16 @@
     const preview = source.cloneNode(true);
     preview.classList.remove("dragging", "drag-over");
     preview.classList.add("drag-preview", `${type}-drag-preview`);
+
+    if (source.classList.contains("task-card-merged")) {
+      const mergedGroup = source.closest(".task-merge-group");
+      preview.classList.remove("task-card-merged");
+      preview.style.gridRow = "";
+      preview.style.gridColumn = "";
+      preview.style.gridTemplateColumns = mergedGroup ? getComputedStyle(mergedGroup).gridTemplateColumns : "";
+      const titleSlot = preview.querySelector(".task-title-slot");
+      titleSlot?.classList.remove("task-title-slot");
+    }
 
     const sourceTextareas = [...source.querySelectorAll("textarea")];
     const previewTextareas = [...preview.querySelectorAll("textarea")];
