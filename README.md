@@ -1,8 +1,8 @@
-# 파메어스 플랫폼기획팀 주간보고 v1.0
+# 파메어스 플랫폼기획팀 주간보고 v1.1
 
 GitHub Pages + Google OAuth + Google Sheets API 기반 무서버 주간보고입니다.
 
-## v1.0 주요 기능
+## v1.1 주요 기능
 
 - 담당자 순서: 백인학 → 류재환 → 허미순 → 김환희
 - 담당자별 프로젝트·작업 드래그앤드롭
@@ -18,6 +18,13 @@ GitHub Pages + Google OAuth + Google Sheets API 기반 무서버 주간보고입
 - 저장 완료 시 `[YY-MM-DD HH:mm:ss 저장되었습니다.]` 토스트
 - 상태값·인쇄 기능 제거
 
+- 페이지 진입 시 이전 Google 승인 계정으로 자동 연결 시도
+- 자동 연결 실패 시에만 `Google 연결` 버튼 표시
+- 마지막 사용 이메일을 로그인 힌트로 사용해 계정 선택 단계를 최소화
+- 토큰 만료 시 API 요청을 한 번 자동 재시도
+- KPI 표 상단 고정 헤더 제거로 첫 행 가림 방지
+- KPI 비고를 자동 높이 조절되는 여러 줄 입력칸으로 변경
+
 ## 실행
 
 `config.js` 설정 전에는 DEMO 모드로 확인할 수 있습니다.
@@ -29,6 +36,6 @@ GitHub Pages + Google OAuth + Google Sheets API 기반 무서버 주간보고입
 
 ## Google Sheets 원본
 
-`파메어스_주간보고_GoogleSheets_원본양식_v1.0.xlsx`를 Google Drive에 업로드한 뒤 Google 스프레드시트로 저장하세요.
+`파메어스_주간보고_GoogleSheets_원본양식_v1.1.xlsx`를 Google Drive에 업로드한 뒤 Google 스프레드시트로 저장하세요.
 
 데이터 시트 1행은 한국어 설명, 2행은 프로그램 연동용 영문 키, 3행부터 실제 데이터입니다.

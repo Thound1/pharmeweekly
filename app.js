@@ -9,6 +9,8 @@
   const ZOOM_STORAGE_KEY = "pharmearth-weekly-serverless-font-scale-v2";
   const ZOOM_LEVELS = [0.9, 1, 1.1, 1.2, 1.3, 1.45, 1.6, 1.8, 2, 2.25, 2.5];
   const OAUTH_SCOPE = "https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/userinfo.email";
+  const LAST_GOOGLE_EMAIL_KEY = "pharmearth-weekly-google-email-v1";
+  const GOOGLE_IDENTITY_WAIT_MS = 10000;
   const PLACEHOLDER_CLIENT_ID = "YOUR_OAUTH_CLIENT_ID.apps.googleusercontent.com";
   const PLACEHOLDER_SHEET_ID = "YOUR_GOOGLE_SPREADSHEET_ID";
 
@@ -72,7 +74,13 @@
     savePromise: null,
     saveQueued: false,
     lastSavedAt: null,
-    changeVersion: 0
+    changeVersion: 0,
+    authenticating: false,
+    authPromise: null,
+    authResolve: null,
+    authReject: null,
+    authTimer: null,
+    tokenExpiresAt: 0
   };
 
   const el = {};
@@ -86,7 +94,40 @@
     state.reportZoom = loadReportZoom();
     applyModeUi();
     applyReportZoom();
-    loadData().catch(handleError);
+    if (state.demoMode) {
+      loadData().catch(handleError);
+    } else {
+      initializeGoogleMode().catch(handleError);
+    }
+  }
+
+  async function initializeGoogleMode() {
+    if (!validGoogleConfig()) {
+      applyModeUi();
+      setStatus("config.js의 Google 설정을 확인해 주세요.");
+      return;
+    }
+
+    state.authenticating = true;
+    applyModeUi();
+    setLoading(true, "이전 Google 연결을 자동으로 확인하는 중입니다.");
+    try {
+      await waitForGoogleIdentity();
+      initializeTokenClient();
+      await requestGoogleToken({ silent: true });
+      await fetchUserEmail();
+      applyModeUi();
+      await loadData();
+    } catch (error) {
+      state.token = null;
+      state.tokenExpiresAt = 0;
+      applyModeUi();
+      setStatus("Google 연결 필요 · 처음 한 번만 연결하면 다음 접속부터 자동으로 시도합니다.");
+    } finally {
+      state.authenticating = false;
+      applyModeUi();
+      setLoading(false);
+    }
   }
 
   function cacheElements() {
@@ -836,13 +877,19 @@
         input.addEventListener("change", () => setWeekKpi(row.criterion, { actual: num(input.value, 0) }));
         input.addEventListener("blur", () => scheduleAutoSave(true));
         actualCell.appendChild(input);
-        const note = document.createElement("input");
-        note.className = "kpi-note-input";
+        const note = document.createElement("textarea");
+        note.className = "kpi-note-input auto-grow";
+        note.rows = 1;
         note.value = getWeekKpiRow(row.criterion)?.note || "";
         note.placeholder = "비고";
+        note.addEventListener("input", () => {
+          autoResize(note);
+          setWeekKpi(row.criterion, { note: note.value });
+        });
         note.addEventListener("change", () => setWeekKpi(row.criterion, { note: note.value }));
         note.addEventListener("blur", () => scheduleAutoSave(true));
         noteCell.appendChild(note);
+        requestAnimationFrame(() => autoResize(note));
       } else {
         actualCell.textContent = displayNumber(row.actual);
         noteCell.textContent = "—";
@@ -1272,9 +1319,11 @@
     state.savePromise = saveData({ auto: true, showLoading: false });
     const result = await state.savePromise;
     state.savePromise = null;
-    if (state.saveQueued || state.dirty) {
+    if (result && (state.saveQueued || state.dirty)) {
       state.saveQueued = false;
       scheduleAutoSave(true);
+    } else if (!result) {
+      state.saveQueued = false;
     }
     return result;
   }
@@ -1338,35 +1387,139 @@
       showToast("현재 데모 모드입니다. config.js에서 DEMO_MODE를 false로 변경하세요.");
       return;
     }
-    if (!window.google?.accounts?.oauth2) {
-      showToast("Google 인증 모듈을 아직 불러오지 못했습니다.", true);
-      return;
-    }
     if (!validGoogleConfig()) {
       showToast("config.js의 Google Client ID와 Spreadsheet ID를 입력하세요.", true);
       return;
     }
-    if (!state.tokenClient) {
-      state.tokenClient = google.accounts.oauth2.initTokenClient({
-        client_id: CONFIG.GOOGLE_CLIENT_ID,
-        scope: OAUTH_SCOPE,
-        callback: async response => {
-          if (response.error) return handleError(new Error(response.error));
-          state.token = response.access_token;
-          await fetchUserEmail();
-          applyModeUi();
-          await loadData();
-        }
-      });
+    if (state.token) {
+      showToast(`${state.userEmail || "Google 계정"}으로 이미 연결되어 있습니다.`);
+      return;
     }
-    state.tokenClient.requestAccessToken({ prompt: state.token ? "" : "consent" });
+
+    state.authenticating = true;
+    applyModeUi();
+    setLoading(true, "Google 계정을 연결하는 중입니다.");
+    try {
+      await waitForGoogleIdentity();
+      initializeTokenClient();
+      await requestGoogleToken({ silent: false });
+      await fetchUserEmail();
+      applyModeUi();
+      await loadData();
+    } catch (error) {
+      if (error?.code !== "popup_closed") handleError(error);
+    } finally {
+      state.authenticating = false;
+      applyModeUi();
+      setLoading(false);
+    }
+  }
+
+  async function waitForGoogleIdentity(timeoutMs = GOOGLE_IDENTITY_WAIT_MS) {
+    const startedAt = Date.now();
+    while (!window.google?.accounts?.oauth2) {
+      if (Date.now() - startedAt >= timeoutMs) {
+        throw new Error("Google 인증 모듈을 불러오지 못했습니다. 네트워크 상태를 확인해 주세요.");
+      }
+      await delay(100);
+    }
+  }
+
+  function initializeTokenClient() {
+    if (state.tokenClient) return state.tokenClient;
+    state.tokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: CONFIG.GOOGLE_CLIENT_ID,
+      scope: OAUTH_SCOPE,
+      include_granted_scopes: true,
+      callback: handleGoogleTokenResponse,
+      error_callback: error => {
+        const authError = new Error(error?.type === "popup_closed" ? "Google 로그인 창이 닫혔습니다." : "Google 인증 창을 열지 못했습니다.");
+        authError.code = error?.type || "oauth_popup_error";
+        settleAuthRequest(authError);
+      }
+    });
+    return state.tokenClient;
+  }
+
+  function requestGoogleToken({ silent = false } = {}) {
+    if (state.authPromise) return state.authPromise;
+    initializeTokenClient();
+    const loginHint = loadLastGoogleEmail();
+    state.authPromise = new Promise((resolve, reject) => {
+      state.authResolve = resolve;
+      state.authReject = reject;
+      window.clearTimeout(state.authTimer);
+      state.authTimer = window.setTimeout(() => {
+        const error = new Error(silent ? "저장된 Google 연결을 확인하지 못했습니다." : "Google 인증 응답 시간이 초과되었습니다.");
+        error.code = silent ? "silent_timeout" : "oauth_timeout";
+        settleAuthRequest(error);
+      }, silent ? 9000 : 120000);
+
+      const options = { prompt: silent ? "none" : "" };
+      if (loginHint) options.login_hint = loginHint;
+      try {
+        state.tokenClient.requestAccessToken(options);
+      } catch (error) {
+        settleAuthRequest(error);
+      }
+    });
+    return state.authPromise;
+  }
+
+  function handleGoogleTokenResponse(response) {
+    if (!response || response.error) {
+      const error = new Error(response?.error_description || response?.error || "Google 인증에 실패했습니다.");
+      error.code = response?.error || "oauth_error";
+      settleAuthRequest(error);
+      return;
+    }
+    state.token = response.access_token;
+    state.tokenExpiresAt = Date.now() + Math.max(0, num(response.expires_in, 3600) - 60) * 1000;
+    settleAuthRequest(null, response);
+  }
+
+  function settleAuthRequest(error, response) {
+    window.clearTimeout(state.authTimer);
+    const resolve = state.authResolve;
+    const reject = state.authReject;
+    state.authPromise = null;
+    state.authResolve = null;
+    state.authReject = null;
+    state.authTimer = null;
+    if (error) reject?.(error);
+    else resolve?.(response);
+  }
+
+  async function refreshGoogleTokenSilently() {
+    if (state.demoMode || !validGoogleConfig()) return false;
+    try {
+      await waitForGoogleIdentity();
+      initializeTokenClient();
+      await requestGoogleToken({ silent: true });
+      await fetchUserEmail();
+      applyModeUi();
+      return true;
+    } catch (_) {
+      state.token = null;
+      state.tokenExpiresAt = 0;
+      applyModeUi();
+      return false;
+    }
   }
 
   async function fetchUserEmail() {
     try {
       const response = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", { headers: { Authorization: `Bearer ${state.token}` } });
-      if (response.ok) state.userEmail = (await response.json()).email || "";
+      if (response.ok) {
+        state.userEmail = (await response.json()).email || "";
+        if (state.userEmail) localStorage.setItem(LAST_GOOGLE_EMAIL_KEY, state.userEmail);
+      }
     } catch (_) { /* optional */ }
+  }
+
+  function loadLastGoogleEmail() {
+    try { return localStorage.getItem(LAST_GOOGLE_EMAIL_KEY) || ""; }
+    catch (_) { return ""; }
   }
 
   function validGoogleConfig() {
@@ -1374,7 +1527,7 @@
   }
 
   async function loadSheetsData() {
-    if (!state.token) throw new Error("Google 연결 후 데이터를 불러올 수 있습니다.");
+    if (!state.token && !(await refreshGoogleTokenSilently())) throw new Error("Google 연결 후 데이터를 불러올 수 있습니다.");
     const keys = Object.keys(SCHEMA);
     const params = new URLSearchParams();
     keys.forEach(key => params.append("ranges", `${quotedSheet(key)}!A:AZ`));
@@ -1404,6 +1557,9 @@
   }
 
   async function saveSheetsData(data) {
+    if (!state.token && !(await refreshGoogleTokenSilently())) {
+      throw new Error("Google 연결이 만료되었습니다. 상단의 Google 연결 버튼을 한 번 눌러 주세요.");
+    }
     const keys = Object.keys(SCHEMA);
     await sheetsFetch("values:batchClear", {
       method: "POST",
@@ -1422,7 +1578,7 @@
     });
   }
 
-  async function sheetsFetch(path, options = {}) {
+  async function sheetsFetch(path, options = {}, allowAuthRetry = true) {
     if (!state.token) throw new Error("Google 연결이 필요합니다.");
     const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(CONFIG.SPREADSHEET_ID)}/${path}`;
     const response = await fetch(url, {
@@ -1431,8 +1587,12 @@
     });
     if (response.status === 401) {
       state.token = null;
+      state.tokenExpiresAt = 0;
       applyModeUi();
-      throw new Error("Google 인증이 만료되었습니다. 다시 연결해 주세요.");
+      if (allowAuthRetry && await refreshGoogleTokenSilently()) {
+        return sheetsFetch(path, options, false);
+      }
+      throw new Error("Google 인증이 만료되었습니다. 상단의 Google 연결 버튼을 한 번 눌러 주세요.");
     }
     if (!response.ok) {
       let message = `Google Sheets API 오류 (${response.status})`;
@@ -1443,10 +1603,16 @@
   }
 
   function applyModeUi() {
+    el.connectButton.disabled = false;
     if (state.demoMode) {
       el.modeBadge.textContent = "DEMO";
       el.connectButton.textContent = "Google 설정 필요";
       setStatus("데모 모드 · 브라우저 저장");
+    } else if (state.authenticating) {
+      el.modeBadge.textContent = "GOOGLE";
+      el.connectButton.textContent = "연결 확인 중…";
+      el.connectButton.disabled = true;
+      setStatus("이전 Google 연결을 자동으로 확인하는 중입니다.");
     } else if (state.token) {
       el.modeBadge.textContent = state.userEmail || "CONNECTED";
       el.connectButton.textContent = "연결됨";
@@ -1519,7 +1685,12 @@
   }
 
   function autoResizeAll() { requestAnimationFrame(() => document.querySelectorAll("textarea.auto-grow").forEach(autoResize)); }
-  function autoResize(textarea) { textarea.style.height = "0px"; textarea.style.height = `${Math.max(38, textarea.scrollHeight)}px`; }
+  function autoResize(textarea) {
+    const base = textarea.classList.contains("kpi-note-input") ? 42 : 38;
+    const minHeight = Math.round(base * (state.reportZoom || 1));
+    textarea.style.height = "0px";
+    textarea.style.height = `${Math.max(minHeight, textarea.scrollHeight)}px`;
+  }
 
   function touch(options = {}) {
     state.changeVersion += 1;
@@ -1593,6 +1764,7 @@
   function formatDateLong(value) { if (!value) return ""; const dateValue = parseIso(value); const day = ["일", "월", "화", "수", "목", "금", "토"][dateValue.getDay()]; return `${dateValue.getFullYear()}.${String(dateValue.getMonth() + 1).padStart(2, "0")}.${String(dateValue.getDate()).padStart(2, "0")}(${day})`; }
   function timestamp() { const now = new Date(); return `${isoDate(now)} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`; }
   function makeId(prefix) { return `${prefix}-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`; }
+  function delay(ms) { return new Promise(resolve => window.setTimeout(resolve, ms)); }
   function deepClone(value) { return JSON.parse(JSON.stringify(value)); }
   function pick(row, headers) { return Object.fromEntries(headers.map(header => [header, row[header] ?? ""])); }
   function sheetName(key) { return CONFIG.SHEET_NAMES?.[key] || key; }
