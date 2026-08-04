@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light" />
+  <title>파메어스 플랫폼기획팀 주간보고</title>
+  <link rel="stylesheet" href="styles.css?v=1.0.0" />
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script src="config.js?v=1.0.0"></script>
+  <script src="seed-data.js"></script>
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <header class="app-header no-print">
+      <div class="brand-block">
+        <span class="brand-mark">PE</span>
+        <div>
+          <p class="eyebrow">PHARMEARTH</p>
+          <h1>플랫폼기획팀 업무보드 <small>v1.0</small></h1>
+        </div>
+      </div>
+      <div class="header-actions">
+        <span id="modeBadge" class="status-badge">확인 중</span>
+                <button id="connectButton" class="button primary" type="button">Google 연결</button>
+      </div>
+    </header>
+
+    <section class="toolbar no-print" aria-label="주간보고 도구">
+      <div class="toolbar-group week-navigation">
+        <button id="prevWeekButton" class="icon-button" type="button" aria-label="이전 주">‹</button>
+        <label class="week-select-wrap">
+          <span>보고 주차</span>
+          <select id="weekSelect"></select>
+        </label>
+        <button id="nextWeekButton" class="icon-button" type="button" aria-label="다음 주">›</button>
+      </div>
+      <div class="toolbar-group toolbar-actions">
+        <div class="zoom-control" role="group" aria-label="글자 크기 조절">
+          <button id="zoomOutButton" class="zoom-button" type="button" aria-label="글자 작게">가−</button>
+          <button id="zoomResetButton" class="zoom-value" type="button" title="기본 글자 크기로 초기화"><span id="zoomValue">글자 100%</span></button>
+          <button id="zoomInButton" class="zoom-button" type="button" aria-label="글자 크게">가＋</button>
+        </div>
+        <button id="newWeekButton" class="button" type="button">새 주차</button>
+        <button id="monthlyExportButton" class="button" type="button">월별 성과 취합</button>
+        <button id="reloadButton" class="button" type="button">최신화</button>
+        <button id="saveButton" class="button success" type="button">지금 저장</button>
+        <a class="button manual-link" href="배포_및_Google연동_매뉴얼.html" target="_blank" rel="noopener">배포 매뉴얼</a>
+      </div>
+    </section>
+
+    <nav class="view-tabs no-print" aria-label="화면 바로가기">
+      <button class="view-tab active" type="button" data-view-target="work">업무 현황</button>
+      <button class="view-tab" type="button" data-view-target="month-kpi">월별 KPI</button>
+      <button class="view-tab" type="button" data-view-target="all-kpi">전체 KPI</button>
+    </nav>
+
+    <main id="report" class="report-paper">
+      <section class="report-hero">
+        <div>
+          <p class="hero-label">주간 업무 정리</p>
+          <h2 id="reportTitle">플랫폼기획팀 주간보고</h2>
+          <p id="reportMeta" class="report-meta"></p>
+        </div>
+      </section>
+
+      <section id="workSection" class="report-section work-section">
+        <div class="section-heading">
+          <div>
+            <span class="section-kicker">업무 현황</span>
+            <h3>주간 업무 현황</h3>
+          </div>
+          <p class="section-note no-print">프로젝트와 작업의 ⋮⋮ 아이콘을 끌어 순서를 변경할 수 있습니다.</p>
+        </div>
+        <div id="ownerSections" class="owner-stack"></div>
+      </section>
+
+      <section id="kpiSection" class="report-section kpi-section">
+        <div class="section-heading kpi-heading">
+          <div>
+            <span class="section-kicker">정량지표</span>
+            <h3>KPI 달성률</h3>
+          </div>
+          <div class="segmented-control no-print" role="tablist" aria-label="KPI 집계 범위">
+            <button class="segment active" data-kpi-scope="week" type="button">주차 KPI</button>
+            <button class="segment" data-kpi-scope="month" type="button">월 KPI</button>
+            <button class="segment" data-kpi-scope="all" type="button">전체 KPI</button>
+          </div>
+        </div>
+        <div class="kpi-scope-row">
+          <strong id="kpiScopeLabel"></strong>
+          <span>주차·월간·연간(1~12월) 모두 정량지표 Target을 기준으로 계산합니다.</span>
+        </div>
+        <div id="kpiSummaryCards" class="kpi-summary-cards"></div>
+        <div class="kpi-table-wrap">
+          <table class="data-table kpi-table">
+            <thead>
+              <tr>
+                <th>정량지표</th>
+                <th>담당자</th>
+                <th>가중치</th>
+                <th>Target</th>
+                <th>실적</th>
+                <th>달성률</th>
+                <th>비고</th>
+              </tr>
+            </thead>
+            <tbody id="kpiTableBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="report-section decision-section">
+        <div class="section-heading">
+          <div>
+            <span class="section-kicker">의사결정</span>
+            <h3>의사결정 필요 사항</h3>
+          </div>
+          <button id="addDecisionButton" class="button small no-print" type="button">항목 추가</button>
+        </div>
+        <div class="decision-list" id="decisionList"></div>
+      </section>
+    </main>
+
+    <footer class="app-footer no-print">
+      <span id="connectionStatus">준비됨</span>
+      <span>v1.0 · GitHub Pages + Google Sheets API · Serverless</span>
+    </footer>
+  </div>
+
+  <div id="toastContainer" class="toast-container" aria-live="polite"></div>
+  <div id="loadingOverlay" class="loading-overlay hidden" aria-hidden="true">
+    <div class="spinner"></div>
+    <p id="loadingText">처리 중입니다.</p>
+  </div>
+
+  <dialog id="projectDialog" class="modal">
+    <form id="projectForm" method="dialog">
+      <div class="modal-header">
+        <div><span class="section-kicker">프로젝트</span><h3>프로젝트 추가</h3></div>
+        <button class="icon-close" type="button" data-close-dialog="projectDialog" aria-label="닫기">×</button>
+      </div>
+      <div class="form-grid">
+        <label><span>담당자</span><input id="projectOwner" readonly /></label>
+        <label><span>프로젝트명</span><input id="projectName" required /></label>
+      </div>
+      <div class="modal-actions">
+        <button class="button" type="button" data-close-dialog="projectDialog">취소</button>
+        <button class="button primary" type="submit">추가</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="taskDialog" class="modal">
+    <form id="taskForm" method="dialog">
+      <div class="modal-header">
+        <div><span class="section-kicker">작업</span><h3 id="taskDialogTitle">작업 추가</h3></div>
+        <button class="icon-close" value="cancel" aria-label="닫기">×</button>
+      </div>
+      <input id="taskId" type="hidden" />
+      <div class="form-grid">
+        <label><span>담당자</span><input id="taskOwner" readonly /></label>
+        <label><span>프로젝트</span><input id="taskProject" readonly /></label>
+        <label><span>구분</span><select id="taskPeriod"><option>금주</option><option>차주</option></select></label>
+        <label><span>완료/예정일</span><input id="taskDueDate" type="text" maxlength="14" placeholder="07/01(수)" /></label>
+        <label class="span-2"><span>작업명</span><input id="taskTitle" placeholder="작업명" /></label>
+        <label class="span-2"><span>상세</span><textarea id="taskDetails" rows="5"></textarea></label>
+        <label><span>KPI 반영 항목</span><select id="taskKpiSelect"><option value="">반영 안 함</option></select></label>
+        <label><span>KPI 실적 수량</span><input id="taskKpiQty" type="number" step="1" value="0" /></label>
+      </div>
+      <div class="modal-actions">
+        <button class="button danger-text hidden" id="deleteTaskButton" type="button">삭제</button>
+        <span class="modal-spacer"></span>
+        <button class="button" type="button" data-close-dialog="taskDialog">취소</button>
+        <button class="button primary" type="submit">저장</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="decisionDialog" class="modal">
+    <form id="decisionForm" method="dialog">
+      <div class="modal-header">
+        <div><span class="section-kicker">의사결정</span><h3>의사결정 항목</h3></div>
+        <button class="icon-close" value="cancel" aria-label="닫기">×</button>
+      </div>
+      <input id="decisionId" type="hidden" />
+      <div class="form-grid">
+        <label class="span-2"><span>항목</span><input id="decisionItem" required /></label>
+        <label class="span-2"><span>주요내용</span><textarea id="decisionSummary" rows="6"></textarea></label>
+        <label class="span-2"><span>의사결정 사항</span><textarea id="decisionRequired" rows="4"></textarea></label>
+        <label class="span-2"><span>비고</span><input id="decisionNote" /></label>
+      </div>
+      <div class="modal-actions">
+        <button class="button danger-text hidden" id="deleteDecisionButton" type="button">삭제</button>
+        <span class="modal-spacer"></span>
+        <button class="button" type="button" data-close-dialog="decisionDialog">취소</button>
+        <button class="button primary" type="submit">저장</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="weekDialog" class="modal">
+    <form id="weekForm">
+      <div class="modal-header">
+        <div><span class="section-kicker">주차</span><h3>새 주차 생성</h3></div>
+        <button class="icon-close" type="button" data-close-dialog="weekDialog" aria-label="닫기">×</button>
+      </div>
+      <div class="form-grid">
+        <label><span>시작일</span><input id="weekStartDate" required type="date" /></label>
+        <label><span>종료일</span><input id="weekEndDate" required type="date" /></label>
+        <label class="checkbox-label"><input id="weekCarryOver" type="checkbox" checked /><span>선택 주차의 차주 업무를 새 주차 금주 업무로 이월</span></label>
+      </div>
+      <div class="modal-actions">
+        <button class="button" type="button" data-close-dialog="weekDialog">취소</button>
+        <button class="button primary" type="submit">생성</button>
+      </div>
+    </form>
+  </dialog>
+
+
+  <dialog id="monthlyExportDialog" class="modal monthly-export-modal">
+    <form id="monthlyExportForm" method="dialog">
+      <div class="modal-header">
+        <div><span class="section-kicker">성과 취합</span><h3>월별 성과 엑셀 출력</h3></div>
+        <button class="icon-close" type="button" data-close-dialog="monthlyExportDialog" aria-label="닫기">×</button>
+      </div>
+      <div class="form-grid monthly-export-grid">
+        <label><span>담당자</span><select id="monthlyExportOwner"></select></label>
+        <label><span>연도</span><select id="monthlyExportYear"></select></label>
+        <label><span>월</span><select id="monthlyExportMonth"></select></label>
+        <div class="monthly-export-summary span-2">
+          <strong id="monthlyExportCount">0건</strong>
+          <span>주차 종료일이 선택 월에 포함되는 주차의 <b>금주 작업</b>만 취합합니다.</span>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="button" type="button" data-close-dialog="monthlyExportDialog">취소</button>
+        <button class="button primary" type="submit">엑셀 다운로드</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+  <script src="xlsx-export.js?v=1.0.0"></script>
+  <script src="app.js?v=1.0.0"></script>
+</body>
+</html>
