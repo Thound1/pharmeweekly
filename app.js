@@ -558,7 +558,7 @@
     visibleTasks().filter(task => task.owner === owner).forEach(task => {
       task.project_order = projects.indexOf(task.project) + 1;
     });
-    touch();
+    touch({ immediate: true });
     renderOwners();
   }
 
@@ -602,7 +602,7 @@
     const ordered = group.filter(task => task.task_id !== source.task_id);
     ordered.push(source);
     ordered.forEach((task, index) => { task.sort_order = index + 1; });
-    touch();
+    touch({ immediate: true });
     renderOwners();
   }
 
@@ -619,7 +619,7 @@
     const targetIndex = group.findIndex(task => task.task_id === targetId);
     group.splice(targetIndex, 0, group.splice(sourceIndex, 1)[0]);
     group.forEach((task, index) => { task.sort_order = index + 1; });
-    touch();
+    touch({ immediate: true });
     renderOwners();
   }
 
@@ -680,7 +680,7 @@
       return;
     }
     visibleTasks().filter(task => task.owner === owner && task.project === oldName).forEach(task => { task.project = newName; });
-    touch();
+    touch({ immediate: true });
     renderOwners();
   }
 
@@ -688,7 +688,7 @@
     if (!window.confirm(`${owner}의 '${project}' 프로젝트와 포함 작업을 삭제할까요?`)) return;
     visibleTasks().filter(task => task.owner === owner && task.project === project).forEach(task => { task.deleted = "Y"; });
     normalizeProjectOrders(owner);
-    touch();
+    touch({ immediate: true });
     renderOwners();
     renderKpi();
   }
@@ -711,7 +711,7 @@
     }
     const order = getProjects(visibleTasks().filter(task => task.owner === owner)).length + 1;
     state.tasks.push(newTask({ owner, project, project_order: order, period: "금주", title: "", details: "" }));
-    touch();
+    touch({ immediate: true });
     el.projectDialog.close();
     renderOwners();
   }
@@ -723,7 +723,7 @@
     }
     const task = newTask({ owner, project, period, title: "", details: "", due_date: "" });
     state.tasks.push(task);
-    touch();
+    touch({ immediate: true });
     renderOwners();
     renderKpi();
     requestAnimationFrame(() => {
@@ -783,7 +783,7 @@
         kpi_qty: num(el.taskKpiQty.value, 0)
       }));
     }
-    touch();
+    touch({ immediate: true });
     el.taskDialog.close();
     renderOwners();
     renderKpi();
@@ -805,7 +805,7 @@
     if (!task || !window.confirm("이 작업을 삭제할까요?")) return;
     task.deleted = "Y";
     normalizeTaskOrders(task.owner, task.project, task.period);
-    touch();
+    touch({ immediate: true });
     el.taskDialog.close();
     renderOwners();
     renderKpi();
@@ -873,7 +873,7 @@
         input.step = "1";
         input.className = "kpi-actual-input";
         input.value = row.actual;
-        input.addEventListener("change", () => setWeekKpi(row.criterion, { actual: num(input.value, 0) }));
+        input.addEventListener("change", () => setWeekKpi(row.criterion, { actual: num(input.value, 0) }, { immediate: true }));
         input.addEventListener("blur", () => scheduleAutoSave(true));
         actualCell.appendChild(input);
         const note = document.createElement("textarea");
@@ -883,9 +883,9 @@
         note.placeholder = "비고";
         note.addEventListener("input", () => {
           autoResize(note);
-          setWeekKpi(row.criterion, { note: note.value });
+          setWeekKpi(row.criterion, { note: note.value }, { render: false });
         });
-        note.addEventListener("change", () => setWeekKpi(row.criterion, { note: note.value }));
+        note.addEventListener("change", () => setWeekKpi(row.criterion, { note: note.value }, { render: false }));
         note.addEventListener("blur", () => scheduleAutoSave(true));
         noteCell.appendChild(note);
         requestAnimationFrame(() => autoResize(note));
@@ -994,7 +994,7 @@
     return state.kpis.find(item => item.week_id === state.currentWeekId && item.kpi_code === criterion.kpi_code && item.owner === criterion.owner && !isDeleted(item));
   }
 
-  function setWeekKpi(criterion, patch) {
+  function setWeekKpi(criterion, patch, options = {}) {
     let row = getWeekKpiRow(criterion);
     if (!row) {
       row = {
@@ -1005,8 +1005,8 @@
       state.kpis.push(row);
     }
     Object.assign(row, patch, { updated_at: timestamp(), updated_by: state.userEmail || "web" });
-    touch();
-    renderKpi();
+    touch({ immediate: options.immediate === true });
+    if (options.render !== false) renderKpi();
   }
 
   function renderDecisions() {
@@ -1072,7 +1072,7 @@
       item: el.decisionItem.value, summary: el.decisionSummary.value, decision: el.decisionRequired.value,
       note: el.decisionNote.value, updated_at: timestamp(), updated_by: state.userEmail || "web"
     });
-    touch();
+    touch({ immediate: true });
     el.decisionDialog.close();
     renderDecisions();
   }
@@ -1081,7 +1081,7 @@
     const item = state.decisions.find(row => row.decision_id === el.decisionId.value);
     if (!item || !window.confirm("이 항목을 삭제할까요?")) return;
     item.deleted = "Y";
-    touch();
+    touch({ immediate: true });
     el.decisionDialog.close();
     renderDecisions();
   }
@@ -1157,7 +1157,7 @@
     });
 
     state.currentWeekId = id;
-    touch();
+    touch({ immediate: true });
     el.weekDialog.close();
     render();
 
@@ -1165,7 +1165,6 @@
       ? `새 주차를 생성하고 차주 업무 ${sourceCarryTasks.length}건을 이월했습니다.`
       : "새 주차를 생성했습니다.";
     showToast(message);
-    scheduleAutoSave(true);
   }
 
   function openMonthlyExportDialog() {
@@ -1298,9 +1297,9 @@
   }
 
   function scheduleAutoSave(immediate = false) {
-    if (!state.dirty) return;
+    if (!state.dirty || immediate !== true) return;
     window.clearTimeout(state.autoSaveTimer);
-    state.autoSaveTimer = window.setTimeout(() => runAutoSave(), immediate ? 0 : 900);
+    state.autoSaveTimer = window.setTimeout(() => runAutoSave(), 0);
   }
 
   async function saveNow() {
@@ -1711,7 +1710,9 @@
   function touch(options = {}) {
     state.changeVersion += 1;
     setDirty(true);
-    scheduleAutoSave(options.immediate === true);
+    // 텍스트 입력 중에는 API를 호출하지 않습니다.
+    // 입력칸을 벗어나는 focusout/blur 또는 명확한 구조 변경 액션에서만 저장합니다.
+    if (options.immediate === true) scheduleAutoSave(true);
   }
   function setDirty(value) { state.dirty = value; }
   function setStatus(message) { el.connectionStatus.textContent = message; }
