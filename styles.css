@@ -1554,3 +1554,152 @@ input:focus, select:focus, textarea:focus {
   .project-rail .project-name-input { grid-column: 2 !important; grid-row: 1 !important; min-height: 34px !important; }
   .project-delete-button { grid-column: 3 !important; grid-row: 1 !important; height: 34px !important; min-height: 34px !important; border-top: 0 !important; border-left: 1px solid rgba(255,255,255,.16) !important; line-height: 34px !important; }
 }
+
+
+/* ========================================================================
+   v1.3.2 · Responsive table tracks + simplified navigation
+   ======================================================================== */
+
+/* 상단 보조 탭과 배포 바로가기 제거 */
+.view-tabs,
+.manual-link { display: none !important; }
+
+/* 보고 주차 이동 컨트롤과 최근 주차 버튼을 하나의 흐름으로 배치 */
+.week-navigation { flex-wrap: nowrap; }
+.recent-week-button {
+  flex: 0 0 auto;
+  min-height: 35px;
+  color: var(--primary-blue);
+  border-color: #AEB7D2;
+  background: var(--primary-blue-soft);
+}
+.recent-week-button:hover {
+  color: #FFFFFF;
+  border-color: var(--primary-blue);
+  background: var(--primary-blue);
+}
+
+/* 프로젝트명: 말줄임표 대신 전체 줄바꿈 표시 */
+.project-block {
+  grid-template-columns: clamp(68px, 4.8vw, 82px) minmax(0, 1fr) !important;
+}
+.project-rail {
+  grid-template-columns: 21px minmax(0, 1fr) !important;
+}
+.project-rail .project-drag-handle {
+  width: 21px !important;
+}
+.project-rail .project-name-input {
+  align-self: center !important;
+  min-height: calc(28px * var(--text-scale)) !important;
+  max-height: none !important;
+  padding: calc(5px * var(--text-scale)) 5px !important;
+  resize: none !important;
+  overflow: hidden !important;
+  white-space: pre-wrap !important;
+  overflow-wrap: anywhere !important;
+  word-break: keep-all !important;
+  text-overflow: clip !important;
+  line-height: 1.32 !important;
+}
+
+/* 헤더와 실제 행이 동일한 반응형 컬럼 트랙을 공유 */
+.period-pane {
+  --task-grid-columns: 24px minmax(96px, .86fr) minmax(210px, 2.5fr) minmax(88px, .62fr) 29px;
+}
+.period-columns,
+.task-list {
+  --task-grid-columns: 24px minmax(96px, .86fr) minmax(210px, 2.5fr) minmax(88px, .62fr) 29px;
+}
+.period-columns {
+  display: grid;
+  grid-template-columns: var(--task-grid-columns) !important;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 0 4px !important;
+}
+.period-columns > span {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  min-height: calc(24px * var(--text-scale));
+  padding: 0 6px;
+  border-right: 1px solid var(--line);
+  text-align: left;
+}
+.period-columns > span:nth-child(4) { justify-content: center; text-align: center; }
+.period-columns > span:last-child { border-right: 0; }
+
+.task-card,
+.task-merge-group,
+.task-merge-group .task-card-merged {
+  grid-template-columns: var(--task-grid-columns) !important;
+}
+
+/* 구분선은 입력 textarea가 아니라 행 전체 높이를 갖는 셀 컨테이너에 귀속 */
+.task-title-wrap,
+.task-cell {
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 100%;
+  border-right: 1px solid var(--line);
+}
+.task-title-wrap {
+  align-items: center !important;
+}
+.task-cell {
+  display: flex;
+  align-items: center;
+  align-self: stretch;
+}
+.task-field {
+  align-self: center;
+  width: 100%;
+  max-width: 100%;
+  border-right: 0 !important;
+}
+.task-details-cell .task-field,
+.task-date-cell .task-field {
+  display: block;
+  margin: auto 0;
+}
+.task-date-cell {
+  justify-content: center;
+}
+.task-date-field {
+  width: 100% !important;
+  min-width: 0 !important;
+  height: auto !important;
+  min-height: calc(27px * var(--text-scale)) !important;
+  text-align: center;
+}
+.task-menu-button {
+  border-left: 0 !important;
+}
+
+/* 병합 작업도 동일한 컬럼 경계선을 사용 */
+.task-merge-title-cell {
+  border-right: 1px solid var(--line) !important;
+}
+.task-merge-title-cell .task-merged-title-field {
+  border-right: 0 !important;
+}
+
+/* 좁은 화면에서도 프로젝트명 전체 표시 */
+@media (max-width: 900px) {
+  .project-rail .project-name-input {
+    white-space: pre-wrap !important;
+    overflow-wrap: anywhere !important;
+    word-break: keep-all !important;
+  }
+  .week-navigation { flex-wrap: wrap; }
+}
+
+@media (max-width: 640px) {
+  .recent-week-button { min-height: 34px; }
+  .period-pane,
+  .period-columns,
+  .task-list {
+    --task-grid-columns: 23px minmax(0, 1fr) minmax(72px, .62fr) 27px;
+  }
+}

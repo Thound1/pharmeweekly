@@ -184,7 +184,7 @@
     el.nextWeekButton.addEventListener("click", () => moveWeek(-1));
     el.newWeekButton.addEventListener("click", openWeekDialog);
     el.monthlyExportButton.addEventListener("click", openMonthlyExportDialog);
-    el.reloadButton.addEventListener("click", refreshData);
+    el.reloadButton.addEventListener("click", goToLatestWeek);
     el.saveButton.addEventListener("click", saveNow);
     el.zoomOutButton.addEventListener("click", () => stepReportZoom(-1));
     el.zoomInButton.addEventListener("click", () => stepReportZoom(1));
@@ -409,8 +409,9 @@
     remove.title = `${project.name} 프로젝트 삭제`;
     remove.addEventListener("click", () => deleteProject(owner, project.name));
 
-    const projectInput = document.createElement("input");
-    projectInput.className = "project-name-input";
+    const projectInput = document.createElement("textarea");
+    projectInput.className = "project-name-input auto-grow";
+    projectInput.rows = 1;
     projectInput.value = project.name;
     projectInput.title = project.name;
     projectInput.setAttribute("aria-label", `${owner} 프로젝트명`);
@@ -461,7 +462,13 @@
 
     const columns = document.createElement("div");
     columns.className = "period-columns";
-    columns.innerHTML = `<span>작업명</span><span>상세</span><span>완료/예정일</span>`;
+    columns.innerHTML = `
+      <span class="column-spacer" aria-hidden="true"></span>
+      <span>작업명</span>
+      <span>상세</span>
+      <span>완료/예정일</span>
+      <span class="column-spacer" aria-hidden="true"></span>
+    `;
 
     const list = document.createElement("div");
     list.className = "task-list";
@@ -570,13 +577,18 @@
     bindTaskField(title, task, "title");
     titleWrap.append(marker, title);
 
+    const detailsCell = document.createElement("div");
+    detailsCell.className = "task-cell task-details-cell";
     const details = document.createElement("textarea");
     details.className = "task-field task-details-field auto-grow";
     details.rows = 1;
     details.value = task.details || "";
     details.placeholder = "상세 내용";
     bindTaskField(details, task, "details");
+    detailsCell.appendChild(details);
 
+    const dueCell = document.createElement("div");
+    dueCell.className = "task-cell task-date-cell";
     const due = document.createElement("textarea");
     due.className = "task-field task-date-field auto-grow";
     due.rows = 1;
@@ -584,6 +596,7 @@
     due.placeholder = "00/00(월)";
     due.value = task.due_date || "";
     bindTaskField(due, task, "due_date");
+    dueCell.appendChild(due);
 
     const menu = document.createElement("button");
     menu.type = "button";
@@ -595,7 +608,7 @@
     card.addEventListener("dragover", event => dragOverTask(event, task, card));
     card.addEventListener("dragleave", () => card.classList.remove("drag-over"));
     card.addEventListener("drop", event => dropTaskOnTask(event, task, card));
-    card.append(handle, titleWrap, details, due, menu);
+    card.append(handle, titleWrap, detailsCell, dueCell, menu);
     return card;
   }
 
@@ -1421,6 +1434,19 @@
     showToast("최신 데이터를 불러왔습니다.");
   }
 
+  async function goToLatestWeek() {
+    await flushAutoSave();
+    await loadData();
+    const latest = sortedWeeks()[0];
+    if (!latest) {
+      showToast("이동할 보고 주차가 없습니다.", true);
+      return;
+    }
+    state.currentWeekId = latest.week_id;
+    render();
+    showToast(`${formatDate(latest.start_date)} ~ ${formatDate(latest.end_date)} 최근 주차로 이동했습니다.`);
+  }
+
   function scheduleAutoSave(immediate = false) {
     if (!state.dirty || immediate !== true) return;
     window.clearTimeout(state.autoSaveTimer);
@@ -1925,7 +1951,11 @@
       : Math.max(base, requiredHeight);
 
     textarea.classList.toggle("is-single-line", isSingleLine);
-    textarea.style.height = `${targetHeight}px`;
+    textarea.style.setProperty(
+      "height",
+      `${targetHeight}px`,
+      textarea.classList.contains("project-name-input") ? "important" : ""
+    );
   }
 
   function touch(options = {}) {
