@@ -11,6 +11,7 @@
   const OAUTH_SCOPE = "https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/userinfo.email";
   const LAST_GOOGLE_EMAIL_KEY = "pharmearth-weekly-google-email-v1";
   const REMEMBER_GOOGLE_ACCOUNT_KEY = "pharmearth-weekly-remember-google-account-v1";
+  const GOOGLE_SESSION_TOKEN_KEY = "pharmearth-weekly-google-session-token-v1";
   const GOOGLE_IDENTITY_WAIT_MS = 10000;
   const PLACEHOLDER_CLIENT_ID = "YOUR_OAUTH_CLIENT_ID.apps.googleusercontent.com";
   const PLACEHOLDER_SHEET_ID = "YOUR_GOOGLE_SPREADSHEET_ID";
@@ -83,6 +84,7 @@
     authTimer: null,
     tokenExpiresAt: 0,
     googleIdentityReady: false,
+    tokenExpiryTimer: null,
     rememberGoogleAccount: loadRememberGoogleAccount()
   };
 
@@ -119,6 +121,20 @@
       await waitForGoogleIdentity();
       initializeTokenClient();
       state.googleIdentityReady = true;
+
+      if (restoreGoogleSessionToken()) {
+        setLoading(true, "저장된 Google 세션을 확인하는 중입니다.");
+        try {
+          await fetchUserEmail();
+          await loadData();
+          setStatus("브라우저 세션의 Google 연결을 복원했습니다.");
+        } catch (error) {
+          clearGoogleSessionToken();
+          state.token = null;
+          state.tokenExpiresAt = 0;
+          showToast("저장된 Google 연결이 만료되어 다시 연결이 필요합니다.", true);
+        }
+      }
     } catch (error) {
       state.googleIdentityReady = false;
       handleError(error);
@@ -127,7 +143,7 @@
       applyModeUi();
       setLoading(false);
       if (state.googleIdentityReady && !state.token) {
-        setStatus("Google 연결 버튼을 눌러 주세요 · 승인 이력이 있으면 계정 선택 없이 연결됩니다.");
+        setStatus("Google 연결 버튼을 눌러 주세요 · 연결 후에는 현재 탭 세션에서 유지됩니다.");
       }
     }
   }
@@ -155,10 +171,12 @@
       saveRememberGoogleAccount(state.rememberGoogleAccount);
       if (state.rememberGoogleAccount) {
         if (state.userEmail) localStorage.setItem(LAST_GOOGLE_EMAIL_KEY, state.userEmail);
-        showToast("마지막 Google 계정을 이 브라우저에 기억합니다.");
+        persistGoogleSessionToken();
+        showToast("유효한 Google 연결을 현재 브라우저 탭 세션에서 유지합니다.");
       } else {
+        clearGoogleSessionToken();
         try { localStorage.removeItem(LAST_GOOGLE_EMAIL_KEY); } catch (_) {}
-        showToast("저장된 Google 계정 정보를 삭제했습니다.");
+        showToast("브라우저에 보관된 Google 세션 정보를 삭제했습니다.");
       }
     });
     el.weekSelect.addEventListener("change", () => changeWeek(el.weekSelect.value));
@@ -379,9 +397,6 @@
     const rail = document.createElement("aside");
     rail.className = "project-rail";
 
-    const railControls = document.createElement("div");
-    railControls.className = "project-rail-controls no-print";
-
     const handle = dragHandle("프로젝트 순서 변경");
     handle.classList.add("project-drag-handle");
     handle.addEventListener("dragstart", event => startProjectDrag(event, owner, project.name, article));
@@ -389,11 +404,10 @@
 
     const remove = document.createElement("button");
     remove.type = "button";
-    remove.className = "project-delete-button";
+    remove.className = "project-delete-button no-print";
     remove.textContent = "삭제";
     remove.title = `${project.name} 프로젝트 삭제`;
     remove.addEventListener("click", () => deleteProject(owner, project.name));
-    railControls.append(handle, remove);
 
     const projectInput = document.createElement("input");
     projectInput.className = "project-name-input";
@@ -402,7 +416,7 @@
     projectInput.setAttribute("aria-label", `${owner} 프로젝트명`);
     projectInput.addEventListener("change", () => renameProject(owner, project.name, projectInput.value.trim(), projectInput));
 
-    rail.append(railControls, projectInput);
+    rail.append(handle, projectInput, remove);
 
     article.addEventListener("dragover", event => dragOverProject(event, article));
     article.addEventListener("dragleave", () => article.classList.remove("drag-over"));
@@ -1609,6 +1623,8 @@
     }
     state.token = response.access_token;
     state.tokenExpiresAt = Date.now() + Math.max(0, num(response.expires_in, 3600) - 60) * 1000;
+    armTokenExpiryTimer();
+    persistGoogleSessionToken();
     settleAuthRequest(null, response);
   }
 
@@ -1627,6 +1643,7 @@
   async function refreshGoogleTokenSilently() {
     // Google Identity Services의 토큰 팝업은 사용자 클릭에서 실행해야 안정적으로 열립니다.
     // 정적 GitHub Pages에서는 백그라운드 무소음 재발급을 시도하지 않습니다.
+    clearGoogleSessionToken();
     state.token = null;
     state.tokenExpiresAt = 0;
     applyModeUi();
@@ -1639,6 +1656,7 @@
       if (response.ok) {
         state.userEmail = (await response.json()).email || "";
         if (state.userEmail && state.rememberGoogleAccount) localStorage.setItem(LAST_GOOGLE_EMAIL_KEY, state.userEmail);
+        if (state.rememberGoogleAccount) persistGoogleSessionToken();
         if (!state.rememberGoogleAccount) {
           try { localStorage.removeItem(LAST_GOOGLE_EMAIL_KEY); } catch (_) {}
         }
@@ -1653,15 +1671,68 @@
   }
 
   function loadRememberGoogleAccount() {
-    try { return localStorage.getItem(REMEMBER_GOOGLE_ACCOUNT_KEY) === "Y"; }
-    catch (_) { return false; }
+    try {
+      const saved = localStorage.getItem(REMEMBER_GOOGLE_ACCOUNT_KEY);
+      return saved === null ? true : saved === "Y";
+    } catch (_) { return true; }
   }
 
   function saveRememberGoogleAccount(value) {
+    try { localStorage.setItem(REMEMBER_GOOGLE_ACCOUNT_KEY, value ? "Y" : "N"); }
+    catch (_) {}
+  }
+
+  function persistGoogleSessionToken() {
+    if (!state.rememberGoogleAccount || !state.token || state.tokenExpiresAt <= Date.now()) {
+      if (!state.rememberGoogleAccount || state.tokenExpiresAt <= Date.now()) clearGoogleSessionToken();
+      return;
+    }
     try {
-      if (value) localStorage.setItem(REMEMBER_GOOGLE_ACCOUNT_KEY, "Y");
-      else localStorage.removeItem(REMEMBER_GOOGLE_ACCOUNT_KEY);
-    } catch (_) {}
+      sessionStorage.setItem(GOOGLE_SESSION_TOKEN_KEY, JSON.stringify({
+        access_token: state.token,
+        expires_at: state.tokenExpiresAt,
+        email: state.userEmail || loadLastGoogleEmail() || ""
+      }));
+    } catch (_) { /* sessionStorage unavailable */ }
+  }
+
+  function restoreGoogleSessionToken() {
+    if (!state.rememberGoogleAccount) return false;
+    try {
+      const saved = JSON.parse(sessionStorage.getItem(GOOGLE_SESSION_TOKEN_KEY) || "null");
+      if (!saved?.access_token || num(saved.expires_at) <= Date.now() + 15000) {
+        clearGoogleSessionToken();
+        return false;
+      }
+      state.token = saved.access_token;
+      state.tokenExpiresAt = num(saved.expires_at);
+      state.userEmail = saved.email || "";
+      armTokenExpiryTimer();
+      return true;
+    } catch (_) {
+      clearGoogleSessionToken();
+      return false;
+    }
+  }
+
+  function clearGoogleSessionToken() {
+    window.clearTimeout(state.tokenExpiryTimer);
+    state.tokenExpiryTimer = null;
+    try { sessionStorage.removeItem(GOOGLE_SESSION_TOKEN_KEY); } catch (_) {}
+  }
+
+  function armTokenExpiryTimer() {
+    window.clearTimeout(state.tokenExpiryTimer);
+    const delayMs = Math.max(0, state.tokenExpiresAt - Date.now());
+    if (!delayMs) return;
+    state.tokenExpiryTimer = window.setTimeout(() => {
+      clearGoogleSessionToken();
+      state.token = null;
+      state.tokenExpiresAt = 0;
+      applyModeUi();
+      setStatus("Google 연결이 만료되었습니다. 연결 버튼을 다시 눌러 주세요.");
+      showToast("Google 연결 세션이 만료되었습니다.", true);
+    }, Math.min(delayMs, 2147483647));
   }
 
   function validGoogleConfig() {
@@ -1728,6 +1799,7 @@
       headers: { Authorization: `Bearer ${state.token}`, "Content-Type": "application/json", ...(options.headers || {}) }
     });
     if (response.status === 401) {
+      clearGoogleSessionToken();
       state.token = null;
       state.tokenExpiresAt = 0;
       applyModeUi();

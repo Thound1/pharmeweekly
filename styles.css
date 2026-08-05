@@ -1419,3 +1419,138 @@ input:focus, select:focus, textarea:focus {
   .period-range { font-size: calc(10px * var(--text-scale)) !important; }
   .task-list { --task-grid-columns: 23px minmax(0,1fr) 72px 27px; }
 }
+
+
+/* ========================================================================
+   v1.3.1 · Final compact project rail + session token persistence UI
+   ======================================================================== */
+
+/* 프로젝트 레일: 드래그는 왼쪽 세로축, 삭제는 프로젝트명 하단 */
+.project-block {
+  grid-template-columns: clamp(72px, 5.3vw, 88px) minmax(0, 1fr) !important;
+}
+.project-rail {
+  display: grid !important;
+  grid-template-columns: 24px minmax(0, 1fr) !important;
+  grid-template-rows: minmax(0, 1fr) 23px !important;
+  min-width: 0;
+  min-height: 100%;
+  border-right: 2px solid var(--secondary) !important;
+}
+.project-rail-controls { display: contents !important; }
+.project-rail .project-drag-handle {
+  grid-column: 1 !important;
+  grid-row: 1 / span 2 !important;
+  align-self: stretch !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 24px !important;
+  height: auto !important;
+  min-height: 100% !important;
+  padding: 0 !important;
+  border-right: 1px solid rgba(255,255,255,.16) !important;
+  border-bottom: 0 !important;
+  writing-mode: horizontal-tb;
+}
+.project-rail .project-name-input {
+  grid-column: 2 !important;
+  grid-row: 1 !important;
+  align-self: stretch !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-height: 34px !important;
+  padding: 4px 7px !important;
+  border: 0 !important;
+  color: #FFFFFF;
+  background: transparent;
+  font-size: calc(11px * var(--text-scale)) !important;
+  font-weight: 850;
+  line-height: 1.25 !important;
+  text-align: left;
+}
+.project-delete-button {
+  grid-column: 2 !important;
+  grid-row: 2 !important;
+  align-self: end !important;
+  width: 100% !important;
+  height: 23px !important;
+  min-height: 23px !important;
+  padding: 0 3px !important;
+  border-top: 1px solid rgba(255,255,255,.16) !important;
+  font-size: calc(8px * var(--text-scale)) !important;
+  line-height: 23px !important;
+}
+
+/* 모든 한 줄 셀은 수직 중앙 정렬, 여러 줄은 동일한 상하 패딩 유지 */
+.owner-header,
+.owner-title,
+.period-title,
+.period-title-left,
+.task-card,
+.task-title-wrap,
+.task-columns,
+.columns,
+.kpi-table th,
+.kpi-table td,
+.decision-card,
+.button,
+.status-badge,
+.week-select-wrap { align-items: center; }
+
+.task-field.is-single-line {
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  line-height: calc(27px * var(--text-scale)) !important;
+}
+.task-title-wrap { align-items: center !important; }
+.task-title-marker {
+  align-self: stretch !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  line-height: 1 !important;
+}
+.task-drag,
+.task-menu-button {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+.task-date-field.is-single-line {
+  line-height: calc(27px * var(--text-scale)) !important;
+}
+.task-merge-title-cell {
+  align-items: center !important;
+  align-content: center !important;
+}
+.task-merge-title-cell .task-merged-title-field.is-single-line {
+  align-self: center !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  line-height: calc(27px * var(--text-scale)) !important;
+}
+
+/* 세션 연결 유지 컨트롤 상태를 명확히 표시 */
+.remember-login-control {
+  border-color: #B8BECE;
+  color: var(--brand);
+}
+.remember-login-control:has(input:checked) {
+  border-color: var(--primary-blue);
+  color: var(--primary-blue);
+  background: var(--primary-blue-soft);
+}
+
+@media (max-width: 900px) {
+  .project-block { grid-template-columns: 1fr !important; }
+  .project-rail {
+    grid-template-columns: 26px minmax(0,1fr) 42px !important;
+    grid-template-rows: 34px !important;
+    border-right: 0 !important;
+    border-bottom: 2px solid var(--secondary) !important;
+  }
+  .project-rail .project-drag-handle { grid-column: 1 !important; grid-row: 1 !important; width: 26px !important; min-height: 34px !important; }
+  .project-rail .project-name-input { grid-column: 2 !important; grid-row: 1 !important; min-height: 34px !important; }
+  .project-delete-button { grid-column: 3 !important; grid-row: 1 !important; height: 34px !important; min-height: 34px !important; border-top: 0 !important; border-left: 1px solid rgba(255,255,255,.16) !important; line-height: 34px !important; }
+}
