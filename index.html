@@ -5,10 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="color-scheme" content="light" />
   <title>파메어스 플랫폼기획팀 주간보고</title>
-  <link rel="stylesheet" href="styles.css?v=1.2.0" />
+  <link rel="stylesheet" href="styles.css?v=1.3.0" />
   <script src="https://accounts.google.com/gsi/client" async defer></script>
-  <script src="config.js?v=1.2.0"></script>
-  <script src="seed-data.js?v=1.2.0"></script>
+  <script src="config.js?v=1.3.0"></script>
+  <script src="seed-data.js?v=1.3.0"></script>
 </head>
 <body>
   <div id="app" class="app-shell">
@@ -17,12 +17,16 @@
         <span class="brand-mark">PE</span>
         <div>
           <p class="eyebrow">PHARMEARTH</p>
-          <h1>플랫폼기획팀 업무보드 <small>v1.2</small></h1>
+          <h1>플랫폼기획팀 업무보드 <small>v1.3</small></h1>
         </div>
       </div>
       <div class="header-actions">
         <span id="modeBadge" class="status-badge">확인 중</span>
-                <button id="connectButton" class="button primary" type="button">Google 연결</button>
+        <label class="remember-login-control" title="Google 비밀번호나 액세스 토큰은 저장하지 않고 마지막 연결 계정만 기억합니다.">
+          <input id="rememberLoginCheckbox" type="checkbox" />
+          <span>로그인 계정 기억</span>
+        </label>
+        <button id="connectButton" class="button primary" type="button">Google 연결</button>
       </div>
     </header>
 
@@ -124,7 +128,7 @@
 
     <footer class="app-footer no-print">
       <span id="connectionStatus">준비됨</span>
-      <span>v1.2 · GitHub Pages + Google Sheets API · Serverless</span>
+      <span>v1.3 · GitHub Pages + Google Sheets API · Serverless</span>
     </footer>
   </div>
 
@@ -162,7 +166,7 @@
         <label><span>담당자</span><input id="taskOwner" readonly /></label>
         <label><span>프로젝트</span><input id="taskProject" readonly /></label>
         <label><span>구분</span><select id="taskPeriod"><option>금주</option><option>차주</option></select></label>
-        <label><span>완료/예정일</span><input id="taskDueDate" type="text" maxlength="14" placeholder="07/01(수)" /></label>
+        <label><span>완료/예정일</span><input id="taskDueDate" type="text" maxlength="14" placeholder="00/00(월)" /></label>
         <label class="span-2"><span>작업명</span><input id="taskTitle" placeholder="작업명" /></label>
         <label class="span-2"><span>상세</span><textarea id="taskDetails" rows="5"></textarea></label>
         <label><span>KPI 반영 항목</span><select id="taskKpiSelect"><option value="">반영 안 함</option></select></label>
@@ -241,7 +245,7 @@
   </dialog>
 
   <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
-  <script src="xlsx-export.js?v=1.2.0"></script>
-  <script src="app.js?v=1.2.0"></script>
+  <script src="xlsx-export.js?v=1.3.0"></script>
+  <script src="app.js?v=1.3.0"></script>
 </body>
 </html>

@@ -10,16 +10,17 @@
   const ZOOM_LEVELS = [0.9, 1, 1.1, 1.2, 1.3, 1.45, 1.6, 1.8, 2, 2.25, 2.5];
   const OAUTH_SCOPE = "https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/userinfo.email";
   const LAST_GOOGLE_EMAIL_KEY = "pharmearth-weekly-google-email-v1";
+  const REMEMBER_GOOGLE_ACCOUNT_KEY = "pharmearth-weekly-remember-google-account-v1";
   const GOOGLE_IDENTITY_WAIT_MS = 10000;
   const PLACEHOLDER_CLIENT_ID = "YOUR_OAUTH_CLIENT_ID.apps.googleusercontent.com";
   const PLACEHOLDER_SHEET_ID = "YOUR_GOOGLE_SPREADSHEET_ID";
 
   const SCHEMA = {
     weeks: ["week_id", "start_date", "end_date", "created_at", "updated_at", "updated_by"],
-    tasks: ["task_id", "week_id", "owner", "project", "project_order", "period", "title", "details", "due_date", "sort_order", "kpi_code", "kpi_qty", "deleted", "updated_at", "updated_by"],
-    kpis: ["kpi_id", "week_id", "kpi_code", "kpi_name", "owner", "actual", "note", "legacy_target", "sort_order", "deleted", "updated_at", "updated_by"],
+    tasks: ["task_id", "week_id", "owner", "project", "project_order", "period", "title", "details", "due_date", "sort_order", "kpi_code", "kpi_qty", "updated_at", "updated_by"],
+    kpis: ["kpi_id", "week_id", "kpi_code", "kpi_name", "owner", "actual", "note", "legacy_target", "sort_order", "updated_at", "updated_by"],
     criteria: ["kpi_code", "kpi_name", "category", "owner", "weight", "annual_target", "m1_target", "m2_target", "m3_target", "m4_target", "m5_target", "m6_target", "m7_target", "m8_target", "m9_target", "m10_target", "m11_target", "m12_target", "sort_order", "active"],
-    decisions: ["decision_id", "week_id", "item", "summary", "decision", "note", "sort_order", "deleted", "updated_at", "updated_by"]
+    decisions: ["decision_id", "week_id", "item", "summary", "decision", "note", "sort_order", "updated_at", "updated_by"]
   };
 
   const DISPLAY_HEADERS = {
@@ -30,15 +31,15 @@
     tasks: [
       "작업 ID (내부 저장용)", "주차 ID (해당 보고 주차 연결)", "담당자 (인원별 구분 헤더)",
       "프로젝트명 (담당자 아래 프로젝트 제목)", "프로젝트 순서 (드래그앤드롭)", "금주/차주 구분 (좌우 영역)",
-      "작업명 (작업명 입력칸)", "상세 내용 (상세 입력칸)", "완료/예정일 (예: 07/01(수))",
+      "작업명 (작업명 입력칸)", "상세 내용 (상세 입력칸)", "완료/예정일 (예: 00/00(월))",
       "프로젝트 내 작업 순서 (드래그앤드롭)", "연결 KPI 코드 (화면 비노출)", "KPI 실적 수량 (자동 합산 대상)",
-      "삭제 여부 (Y=화면 제외)", "최종 수정일시 (자동)", "최종 수정자 (자동)"
+      "최종 수정일시 (자동)", "최종 수정자 (자동)"
     ],
     kpis: [
       "KPI 실적 ID (내부 저장용)", "주차 ID (해당 주차 실적)", "KPI 코드 (정량지표 연결·화면 비노출)",
       "KPI명 (HTML KPI 표의 정량지표)", "담당자 (KPI 담당자)", "실적 (주차 KPI 실적 입력)",
       "비고 (KPI 표 비고)", "기존 목표값 (과거 자료 보존용·현재 계산 미사용)", "KPI 표시 순서",
-      "삭제 여부 (Y=화면 제외)", "최종 수정일시 (자동)", "최종 수정자 (자동)"
+      "최종 수정일시 (자동)", "최종 수정자 (자동)"
     ],
     criteria: [
       "KPI 코드 (업무·KPI 실적 연결키)", "KPI명 (HTML KPI 표의 정량지표)", "정량지표 분류/설명",
@@ -49,7 +50,7 @@
     ],
     decisions: [
       "의사결정 ID (내부 저장용)", "주차 ID (해당 보고 주차 연결)", "항목명 (의사결정 카드 제목)",
-      "주요내용", "의사결정 사항", "비고", "표시 순서", "삭제 여부 (Y=화면 제외)",
+      "주요내용", "의사결정 사항", "비고", "표시 순서",
       "최종 수정일시 (자동)", "최종 수정자 (자동)"
     ]
   };
@@ -81,7 +82,8 @@
     authReject: null,
     authTimer: null,
     tokenExpiresAt: 0,
-    googleIdentityReady: false
+    googleIdentityReady: false,
+    rememberGoogleAccount: loadRememberGoogleAccount()
   };
 
   const el = {};
@@ -92,6 +94,7 @@
     cacheElements();
     bindEvents();
     state.demoMode = CONFIG.DEMO_MODE !== false;
+    if (el.rememberLoginCheckbox) el.rememberLoginCheckbox.checked = state.rememberGoogleAccount;
     state.reportZoom = loadReportZoom();
     applyModeUi();
     applyReportZoom();
@@ -131,7 +134,7 @@
 
   function cacheElements() {
     [
-      "modeBadge", "connectButton", "weekSelect", "prevWeekButton", "nextWeekButton",
+      "modeBadge", "connectButton", "rememberLoginCheckbox", "weekSelect", "prevWeekButton", "nextWeekButton",
       "zoomOutButton", "zoomResetButton", "zoomInButton", "zoomValue", "report",
       "newWeekButton", "monthlyExportButton", "reloadButton", "saveButton", "reportTitle", "reportMeta",
       "ownerSections", "kpiScopeLabel", "kpiSummaryCards", "kpiTableBody", "decisionList", "addDecisionButton",
@@ -147,6 +150,17 @@
 
   function bindEvents() {
     el.connectButton.addEventListener("click", connectGoogle);
+    el.rememberLoginCheckbox?.addEventListener("change", () => {
+      state.rememberGoogleAccount = Boolean(el.rememberLoginCheckbox.checked);
+      saveRememberGoogleAccount(state.rememberGoogleAccount);
+      if (state.rememberGoogleAccount) {
+        if (state.userEmail) localStorage.setItem(LAST_GOOGLE_EMAIL_KEY, state.userEmail);
+        showToast("마지막 Google 계정을 이 브라우저에 기억합니다.");
+      } else {
+        try { localStorage.removeItem(LAST_GOOGLE_EMAIL_KEY); } catch (_) {}
+        showToast("저장된 Google 계정 정보를 삭제했습니다.");
+      }
+    });
     el.weekSelect.addEventListener("change", () => changeWeek(el.weekSelect.value));
     el.prevWeekButton.addEventListener("click", () => moveWeek(1));
     el.nextWeekButton.addEventListener("click", () => moveWeek(-1));
@@ -243,30 +257,30 @@
   }
 
   function normalizeRows(rows, key) {
-    return rows.map(row => {
-      const item = { ...row };
-      if (key === "tasks") {
-        item.project_order = num(item.project_order, 1);
-        item.sort_order = num(item.sort_order, 1);
-        item.kpi_qty = num(item.kpi_qty, 0);
-        item.title = stripTaskMarker(item.title);
-        item.deleted = item.deleted || "N";
-      } else if (key === "kpis") {
-        item.actual = num(item.actual, 0);
-        item.legacy_target = num(item.legacy_target, 0);
-        item.sort_order = num(item.sort_order, 1);
-        item.deleted = item.deleted || "N";
-      } else if (key === "criteria") {
-        item.weight = num(item.weight, 0);
-        item.annual_target = num(item.annual_target, 0);
-        for (let month = 1; month <= 12; month += 1) item[`m${month}_target`] = num(item[`m${month}_target`], 0);
-        item.sort_order = num(item.sort_order, 1);
-      } else if (key === "decisions") {
-        item.sort_order = num(item.sort_order, 1);
-        item.deleted = item.deleted || "N";
-      }
-      return item;
-    });
+    return rows
+      .filter(row => String(row?.deleted || "N").toUpperCase() !== "Y")
+      .map(row => {
+        const item = { ...row };
+        delete item.deleted;
+        if (key === "tasks") {
+          item.project_order = num(item.project_order, 1);
+          item.sort_order = num(item.sort_order, 1);
+          item.kpi_qty = num(item.kpi_qty, 0);
+          item.title = stripTaskMarker(item.title);
+        } else if (key === "kpis") {
+          item.actual = num(item.actual, 0);
+          item.legacy_target = num(item.legacy_target, 0);
+          item.sort_order = num(item.sort_order, 1);
+        } else if (key === "criteria") {
+          item.weight = num(item.weight, 0);
+          item.annual_target = num(item.annual_target, 0);
+          for (let month = 1; month <= 12; month += 1) item[`m${month}_target`] = num(item[`m${month}_target`], 0);
+          item.sort_order = num(item.sort_order, 1);
+        } else if (key === "decisions") {
+          item.sort_order = num(item.sort_order, 1);
+        }
+        return item;
+      });
   }
 
   function render() {
@@ -362,27 +376,33 @@
     article.dataset.owner = owner;
     article.dataset.project = project.name;
 
-    const header = document.createElement("header");
-    header.className = "project-header";
+    const rail = document.createElement("aside");
+    rail.className = "project-rail";
+
+    const railControls = document.createElement("div");
+    railControls.className = "project-rail-controls no-print";
+
     const handle = dragHandle("프로젝트 순서 변경");
+    handle.classList.add("project-drag-handle");
     handle.addEventListener("dragstart", event => startProjectDrag(event, owner, project.name, article));
     handle.addEventListener("dragend", () => finishDrag(article));
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "project-delete-button";
+    remove.textContent = "삭제";
+    remove.title = `${project.name} 프로젝트 삭제`;
+    remove.addEventListener("click", () => deleteProject(owner, project.name));
+    railControls.append(handle, remove);
 
     const projectInput = document.createElement("input");
     projectInput.className = "project-name-input";
     projectInput.value = project.name;
+    projectInput.title = project.name;
     projectInput.setAttribute("aria-label", `${owner} 프로젝트명`);
     projectInput.addEventListener("change", () => renameProject(owner, project.name, projectInput.value.trim(), projectInput));
 
-    const actions = document.createElement("div");
-    actions.className = "project-actions no-print";
-    const remove = document.createElement("button");
-    remove.type = "button";
-    remove.className = "button small danger-text";
-    remove.textContent = "삭제";
-    remove.addEventListener("click", () => deleteProject(owner, project.name));
-    actions.append(remove);
-    header.append(handle, projectInput, actions);
+    rail.append(railControls, projectInput);
 
     article.addEventListener("dragover", event => dragOverProject(event, article));
     article.addEventListener("dragleave", () => article.classList.remove("drag-over"));
@@ -395,7 +415,7 @@
       Object.assign(document.createElement("div"), { className: "period-divider" }),
       buildPeriodPane(owner, project.name, "차주")
     );
-    article.append(header, periodGrid);
+    article.append(rail, periodGrid);
     return article;
   }
 
@@ -491,13 +511,10 @@
     title.rows = 1;
     title.value = normalizedTaskTitle(tasks[0]);
     title.placeholder = "작업명";
-    title.setAttribute("aria-label", `${title.value} 공통 작업명 · ${tasks.length}개 일정`);
+    title.setAttribute("aria-label", `${title.value} 공통 작업명`);
     bindMergedTaskTitle(title, tasks, group);
 
-    const count = document.createElement("span");
-    count.className = "task-merge-count";
-    count.textContent = `${tasks.length}개 일정`;
-    mergedTitle.append(marker, title, count);
+    mergedTitle.append(marker, title);
     group.appendChild(mergedTitle);
 
     tasks.forEach((task, index) => {
@@ -550,7 +567,7 @@
     due.className = "task-field task-date-field auto-grow";
     due.rows = 1;
     due.maxLength = 14;
-    due.placeholder = "07/01(수)";
+    due.placeholder = "00/00(월)";
     due.value = task.due_date || "";
     bindTaskField(due, task, "due_date");
 
@@ -775,7 +792,7 @@
 
   function deleteProject(owner, project) {
     if (!window.confirm(`${owner}의 '${project}' 프로젝트와 포함 작업을 삭제할까요?`)) return;
-    visibleTasks().filter(task => task.owner === owner && task.project === project).forEach(task => { task.deleted = "Y"; });
+    state.tasks = state.tasks.filter(task => !(task.week_id === state.currentWeekId && task.owner === owner && task.project === project));
     normalizeProjectOrders(owner);
     touch({ immediate: true });
     renderOwners();
@@ -885,14 +902,15 @@
       task_id: makeId("TASK"), week_id: state.currentWeekId, owner: input.owner, project: input.project,
       project_order: projectOrder, period: input.period || "금주", title: stripTaskMarker(input.title || ""), details: input.details || "",
       due_date: input.due_date || "", sort_order: order, kpi_code: input.kpi_code || "", kpi_qty: num(input.kpi_qty, 0),
-      deleted: "N", updated_at: timestamp(), updated_by: state.userEmail || "web"
+      updated_at: timestamp(), updated_by: state.userEmail || "web"
     };
   }
 
   function deleteTaskFromDialog() {
-    const task = state.tasks.find(item => item.task_id === el.taskId.value);
+    const index = state.tasks.findIndex(item => item.task_id === el.taskId.value);
+    const task = index >= 0 ? state.tasks[index] : null;
     if (!task || !window.confirm("이 작업을 삭제할까요?")) return;
-    task.deleted = "Y";
+    state.tasks.splice(index, 1);
     normalizeTaskOrders(task.owner, task.project, task.period);
     touch({ immediate: true });
     el.taskDialog.close();
@@ -1072,15 +1090,15 @@
   }
 
   function getWeekActual(criterion, weekId) {
-    const row = state.kpis.find(item => item.week_id === weekId && item.kpi_code === criterion.kpi_code && item.owner === criterion.owner && !isDeleted(item));
+    const row = state.kpis.find(item => item.week_id === weekId && item.kpi_code === criterion.kpi_code && item.owner === criterion.owner);
     if (row) return num(row.actual, 0);
     return state.tasks
-      .filter(task => task.week_id === weekId && task.owner === criterion.owner && task.period === "금주" && task.kpi_code === criterion.kpi_code && !isDeleted(task))
+      .filter(task => task.week_id === weekId && task.owner === criterion.owner && task.period === "금주" && task.kpi_code === criterion.kpi_code)
       .reduce((sum, task) => sum + num(task.kpi_qty, 0), 0);
   }
 
   function getWeekKpiRow(criterion) {
-    return state.kpis.find(item => item.week_id === state.currentWeekId && item.kpi_code === criterion.kpi_code && item.owner === criterion.owner && !isDeleted(item));
+    return state.kpis.find(item => item.week_id === state.currentWeekId && item.kpi_code === criterion.kpi_code && item.owner === criterion.owner);
   }
 
   function setWeekKpi(criterion, patch, options = {}) {
@@ -1089,7 +1107,7 @@
       row = {
         kpi_id: makeId("KPIROW"), week_id: state.currentWeekId, kpi_code: criterion.kpi_code,
         kpi_name: criterion.kpi_name, owner: criterion.owner, actual: 0, note: "", legacy_target: 0,
-        sort_order: criterion.sort_order, deleted: "N", updated_at: timestamp(), updated_by: state.userEmail || "web"
+        sort_order: criterion.sort_order, updated_at: timestamp(), updated_by: state.userEmail || "web"
       };
       state.kpis.push(row);
     }
@@ -1100,7 +1118,7 @@
 
   function renderDecisions() {
     el.decisionList.innerHTML = "";
-    const rows = state.decisions.filter(item => item.week_id === state.currentWeekId && !isDeleted(item)).sort((a, b) => num(a.sort_order) - num(b.sort_order));
+    const rows = state.decisions.filter(item => item.week_id === state.currentWeekId).sort((a, b) => num(a.sort_order) - num(b.sort_order));
     if (!rows.length) {
       const empty = document.createElement("div");
       empty.className = "empty-decisions";
@@ -1152,8 +1170,8 @@
     if (!item) {
       item = {
         decision_id: makeId("DEC"), week_id: state.currentWeekId,
-        sort_order: state.decisions.filter(row => row.week_id === state.currentWeekId && !isDeleted(row)).length + 1,
-        deleted: "N", updated_at: timestamp(), updated_by: state.userEmail || "web"
+        sort_order: state.decisions.filter(row => row.week_id === state.currentWeekId).length + 1,
+        updated_at: timestamp(), updated_by: state.userEmail || "web"
       };
       state.decisions.push(item);
     }
@@ -1167,9 +1185,14 @@
   }
 
   function deleteDecisionFromDialog() {
-    const item = state.decisions.find(row => row.decision_id === el.decisionId.value);
+    const index = state.decisions.findIndex(row => row.decision_id === el.decisionId.value);
+    const item = index >= 0 ? state.decisions[index] : null;
     if (!item || !window.confirm("이 항목을 삭제할까요?")) return;
-    item.deleted = "Y";
+    state.decisions.splice(index, 1);
+    state.decisions
+      .filter(row => row.week_id === state.currentWeekId)
+      .sort((a, b) => num(a.sort_order) - num(b.sort_order))
+      .forEach((row, order) => { row.sort_order = order + 1; });
     touch({ immediate: true });
     el.decisionDialog.close();
     renderDecisions();
@@ -1219,7 +1242,7 @@
 
     const sourceWeekId = el.weekForm.dataset.sourceWeekId || state.currentWeekId;
     const sourceCarryTasks = el.weekCarryOver.checked && sourceWeekId
-      ? state.tasks.filter(task => task.week_id === sourceWeekId && task.period === "차주" && !isDeleted(task) && OWNER_ORDER.includes(task.owner))
+      ? state.tasks.filter(task => task.week_id === sourceWeekId && task.period === "차주" && OWNER_ORDER.includes(task.owner))
       : [];
 
     state.weeks.push({
@@ -1239,7 +1262,6 @@
         period: "금주",
         kpi_code: "",
         kpi_qty: 0,
-        deleted: "N",
         updated_at: timestamp(),
         updated_by: state.userEmail || "web"
       });
@@ -1311,7 +1333,7 @@
     const weeks = getMonthlyPerformanceWeeks(year, month);
     const weekIndex = new Map(weeks.map((week, index) => [week.week_id, index]));
     return state.tasks
-      .filter(task => weekIndex.has(task.week_id) && task.owner === owner && task.period === "금주" && !isDeleted(task))
+      .filter(task => weekIndex.has(task.week_id) && task.owner === owner && task.period === "금주")
       .filter(task => String(task.title || "").trim() || String(task.details || "").trim() || String(task.due_date || "").trim())
       .sort((a, b) => {
         return (weekIndex.get(a.week_id) - weekIndex.get(b.week_id))
@@ -1616,14 +1638,30 @@
       const response = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", { headers: { Authorization: `Bearer ${state.token}` } });
       if (response.ok) {
         state.userEmail = (await response.json()).email || "";
-        if (state.userEmail) localStorage.setItem(LAST_GOOGLE_EMAIL_KEY, state.userEmail);
+        if (state.userEmail && state.rememberGoogleAccount) localStorage.setItem(LAST_GOOGLE_EMAIL_KEY, state.userEmail);
+        if (!state.rememberGoogleAccount) {
+          try { localStorage.removeItem(LAST_GOOGLE_EMAIL_KEY); } catch (_) {}
+        }
       }
     } catch (_) { /* optional */ }
   }
 
   function loadLastGoogleEmail() {
+    if (!state.rememberGoogleAccount) return "";
     try { return localStorage.getItem(LAST_GOOGLE_EMAIL_KEY) || ""; }
     catch (_) { return ""; }
+  }
+
+  function loadRememberGoogleAccount() {
+    try { return localStorage.getItem(REMEMBER_GOOGLE_ACCOUNT_KEY) === "Y"; }
+    catch (_) { return false; }
+  }
+
+  function saveRememberGoogleAccount(value) {
+    try {
+      if (value) localStorage.setItem(REMEMBER_GOOGLE_ACCOUNT_KEY, "Y");
+      else localStorage.removeItem(REMEMBER_GOOGLE_ACCOUNT_KEY);
+    } catch (_) {}
   }
 
   function validGoogleConfig() {
@@ -1708,6 +1746,10 @@
 
   function applyModeUi() {
     el.connectButton.disabled = false;
+    if (el.rememberLoginCheckbox) {
+      el.rememberLoginCheckbox.checked = state.rememberGoogleAccount;
+      el.rememberLoginCheckbox.disabled = state.demoMode || state.authenticating;
+    }
     if (state.demoMode) {
       el.modeBadge.textContent = "DEMO";
       el.connectButton.textContent = "Google 설정 필요";
@@ -1729,7 +1771,7 @@
   }
 
   function visibleTasks() {
-    return state.tasks.filter(task => task.week_id === state.currentWeekId && !isDeleted(task) && OWNER_ORDER.includes(task.owner));
+    return state.tasks.filter(task => task.week_id === state.currentWeekId && OWNER_ORDER.includes(task.owner));
   }
 
   function sortedWeeks() {
@@ -1738,7 +1780,6 @@
 
   function currentWeek() { return state.weeks.find(week => week.week_id === state.currentWeekId); }
   function sortCriteria(a, b) { return (OWNER_INDEX[a.owner] ?? 99) - (OWNER_INDEX[b.owner] ?? 99) || num(a.sort_order) - num(b.sort_order); }
-  function isDeleted(row) { return String(row.deleted || "N").toUpperCase() === "Y"; }
   function monthKey(week) { const end = parseIso(week.end_date); return `${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, "0")}`; }
 
   function nextWeekRange(week) {
@@ -1790,10 +1831,29 @@
 
   function autoResizeAll() { requestAnimationFrame(() => document.querySelectorAll("textarea.auto-grow").forEach(autoResize)); }
   function autoResize(textarea) {
-    const base = textarea.classList.contains("kpi-note-input") ? 42 : 38;
-    const minHeight = Math.round(base * (state.reportZoom || 1));
-    textarea.style.height = "0px";
-    textarea.style.height = `${Math.max(minHeight, textarea.scrollHeight)}px`;
+    const scale = state.reportZoom || 1;
+    const style = window.getComputedStyle(textarea);
+    const fontSize = parseFloat(style.fontSize) || 12 * scale;
+    const lineHeight = parseFloat(style.lineHeight) || fontSize * 1.4;
+    const paddingY = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+    const borderY = (parseFloat(style.borderTopWidth) || 0) + (parseFloat(style.borderBottomWidth) || 0);
+    const singleLineHeight = Math.ceil(lineHeight + paddingY + borderY);
+    const base = textarea.classList.contains("kpi-note-input")
+      ? Math.round(42 * scale)
+      : textarea.classList.contains("task-field")
+        ? Math.round(27 * scale)
+        : Math.round(34 * scale);
+
+    textarea.style.height = "1px";
+    const requiredHeight = Math.ceil(textarea.scrollHeight + borderY);
+    const hasLineBreak = String(textarea.value || "").includes("\n");
+    const isSingleLine = !hasLineBreak && requiredHeight <= Math.ceil(singleLineHeight + lineHeight * 0.35);
+    const targetHeight = isSingleLine
+      ? Math.max(base, singleLineHeight)
+      : Math.max(base, requiredHeight);
+
+    textarea.classList.toggle("is-single-line", isSingleLine);
+    textarea.style.height = `${targetHeight}px`;
   }
 
   function touch(options = {}) {
@@ -1834,7 +1894,7 @@
   function normalizeTaskTitles() {
     const groups = new Map();
     state.tasks
-      .filter(task => OWNER_ORDER.includes(task.owner) && !isDeleted(task))
+      .filter(task => OWNER_ORDER.includes(task.owner))
       .sort((a, b) => String(a.week_id).localeCompare(String(b.week_id))
         || (OWNER_INDEX[a.owner] ?? 99) - (OWNER_INDEX[b.owner] ?? 99)
         || num(a.project_order, 999) - num(b.project_order, 999)
