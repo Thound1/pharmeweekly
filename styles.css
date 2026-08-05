@@ -1703,3 +1703,10 @@ input:focus, select:focus, textarea:focus {
     --task-grid-columns: 23px minmax(0, 1fr) minmax(72px, .62fr) 27px;
   }
 }
+
+프로젝트 영역 가운데 배치 */
+.project-rail .project-name-input {
+  align-self: center !important;
+  margin-top: auto !important;
+  margin-bottom: auto !important;
+}
