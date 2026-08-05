@@ -1942,7 +1942,7 @@
         ? Math.round(27 * scale)
         : Math.round(34 * scale);
 
-    textarea.style.height = "1px";
+    textarea.style.setProperty(  "height",  "1px",  textarea.classList.contains("project-name-input") ? "important" : "");
     const requiredHeight = Math.ceil(textarea.scrollHeight + borderY);
     const hasLineBreak = String(textarea.value || "").includes("\n");
     const isSingleLine = !hasLineBreak && requiredHeight <= Math.ceil(singleLineHeight + lineHeight * 0.35);
