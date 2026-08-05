@@ -1704,9 +1704,21 @@ input:focus, select:focus, textarea:focus {
   }
 }
 
-프로젝트 영역 가운데 배치 */
+/*프로젝트 영역 가운데 배치 */
 .project-rail .project-name-input {
   align-self: center !important;
   margin-top: auto !important;
   margin-bottom: auto !important;
+}
+
+/* 완료/예정일은 화면 너비와 관계없이 고정 폭 유지 */
+.period-pane,
+.period-columns,
+.task-list {
+  --task-grid-columns:
+    24px
+    minmax(96px, .86fr)
+    minmax(210px, 2.5fr)
+    88px
+    29px !important;
 }
