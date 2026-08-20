@@ -1557,7 +1557,7 @@ input:focus, select:focus, textarea:focus {
 
 
 /* ========================================================================
-   v1.3.2 · Responsive table tracks + simplified navigation
+   v1.4.0 · Responsive table tracks + simplified navigation
    ======================================================================== */
 
 /* 상단 보조 탭과 배포 바로가기 제거 */
@@ -1704,21 +1704,18 @@ input:focus, select:focus, textarea:focus {
   }
 }
 
-/*프로젝트 영역 가운데 배치 */
-.project-rail .project-name-input {
-  align-self: center !important;
-  margin-top: auto !important;
-  margin-bottom: auto !important;
+/* v1.4.0 collaborative editing */
+.collaboration-badge {
+  background: #eef3ff;
+  border-color: #b8c5e8;
+  color: #44599c;
+  font-weight: 800;
 }
-
-/* 완료/예정일은 화면 너비와 관계없이 고정 폭 유지 */
-.period-pane,
-.period-columns,
-.task-list {
-  --task-grid-columns:
-    24px
-    minmax(96px, .86fr)
-    minmax(210px, 2.5fr)
-    88px
-    29px !important;
+.remote-editing {
+  position: relative;
+  outline: 2px solid #0095ff !important;
+  outline-offset: -2px;
+  box-shadow: inset 0 0 0 1px rgba(0,149,255,.18);
+  background-color: rgba(0,149,255,.045) !important;
 }
+.remote-editing::selection { background: rgba(0,149,255,.18); }

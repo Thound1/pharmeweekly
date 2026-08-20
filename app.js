@@ -13,6 +13,18 @@
   const REMEMBER_GOOGLE_ACCOUNT_KEY = "pharmearth-weekly-remember-google-account-v1";
   const GOOGLE_SESSION_TOKEN_KEY = "pharmearth-weekly-google-session-token-v1";
   const GOOGLE_IDENTITY_WAIT_MS = 10000;
+  const PRESENCE_SHEET_NAME = "접속현황";
+  const PRESENCE_SCHEMA = ["session_id", "user_email", "week_id", "entity_type", "entity_id", "field", "last_seen", "started_at"];
+  const PRESENCE_DISPLAY_HEADERS = [
+    "세션 ID (자동)", "사용자 이메일", "현재 보고 주차", "편집 대상 유형",
+    "편집 대상 ID", "편집 중 필드", "마지막 확인 시각", "접속 시작 시각"
+  ];
+  const PRESENCE_POLL_MS = 15000;
+  const PRESENCE_HEARTBEAT_MS = 45000;
+  const PRESENCE_STALE_MS = 120000;
+  const REMOTE_SYNC_MS = 20000;
+  const KEY_FIELD = { weeks: "week_id", tasks: "task_id", kpis: "kpi_id", criteria: "kpi_code", decisions: "decision_id" };
+  const META_FIELDS = new Set(["updated_at", "updated_by", "created_at"]);
   const PLACEHOLDER_CLIENT_ID = "YOUR_OAUTH_CLIENT_ID.apps.googleusercontent.com";
   const PLACEHOLDER_SHEET_ID = "YOUR_GOOGLE_SPREADSHEET_ID";
 
@@ -85,7 +97,18 @@
     tokenExpiresAt: 0,
     googleIdentityReady: false,
     tokenExpiryTimer: null,
-    rememberGoogleAccount: loadRememberGoogleAccount()
+    rememberGoogleAccount: loadRememberGoogleAccount(),
+    remoteSnapshot: null,
+    mutationPromise: null,
+    presenceSessionId: loadPresenceSessionId(),
+    presenceStartedAt: timestamp(),
+    presenceRows: [],
+    presenceRowNumber: null,
+    presencePollTimer: null,
+    presenceHeartbeatTimer: null,
+    remoteSyncTimer: null,
+    currentEditPresence: null,
+    sheetIdMap: null
   };
 
   const el = {};
@@ -154,7 +177,7 @@
       "zoomOutButton", "zoomResetButton", "zoomInButton", "zoomValue", "report",
       "newWeekButton", "monthlyExportButton", "reloadButton", "saveButton", "reportTitle", "reportMeta",
       "ownerSections", "kpiScopeLabel", "kpiSummaryCards", "kpiTableBody", "decisionList", "addDecisionButton",
-      "connectionStatus", "toastContainer", "loadingOverlay", "loadingText",
+      "connectionStatus", "activeUsersBadge", "toastContainer", "loadingOverlay", "loadingText",
       "projectDialog", "projectForm", "projectOwner", "projectName",
       "taskDialog", "taskForm", "taskDialogTitle", "taskId", "taskOwner", "taskProject", "taskPeriod", "taskDueDate",
       "taskTitle", "taskDetails", "taskKpiSelect", "taskKpiQty", "deleteTaskButton",
@@ -207,10 +230,27 @@
       button.addEventListener("click", () => activateViewTab(button.dataset.viewTarget));
     });
 
-    document.addEventListener("focusout", event => {
-      if (event.target.matches(".task-field, .project-name-input, .kpi-actual-input, .kpi-note-input, dialog input, dialog textarea, dialog select")) {
-        scheduleAutoSave(true);
+    document.addEventListener("focusin", event => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      if (target.dataset.collabKey) {
+        const [entityType, entityId, field] = target.dataset.collabKey.split("::");
+        setPresenceEditing(entityType, entityId, field).catch(() => {});
       }
+    });
+
+    document.addEventListener("focusout", event => {
+      const target = event.target;
+      if (target instanceof HTMLElement && target.dataset.collabKey) {
+        window.setTimeout(() => {
+          const active = document.activeElement;
+          if (!(active instanceof HTMLElement) || active.dataset.collabKey !== target.dataset.collabKey) {
+            clearPresenceEditing().catch(() => {});
+          }
+        }, 60);
+      }
+      if (target.matches("dialog input, dialog textarea, dialog select")) return;
+      if (target.matches(".task-field, .project-name-input, .kpi-actual-input, .kpi-note-input")) scheduleAutoSave(true);
     });
 
     document.querySelectorAll("[data-close-dialog]").forEach(button => {
@@ -239,8 +279,10 @@
       const data = state.demoMode ? loadDemoStore() : await loadSheetsData();
       assignData(data);
       setDirty(false);
+      state.remoteSnapshot = deepClone(serializableData());
       render();
       setStatus(state.demoMode ? "데모 데이터 로드 완료" : "Google Sheets 연결 완료");
+      if (!state.demoMode && state.token) startCollaborationRuntime().catch(handleError);
     } finally {
       setLoading(false);
     }
@@ -415,6 +457,8 @@
     projectInput.value = project.name;
     projectInput.title = project.name;
     projectInput.setAttribute("aria-label", `${owner} 프로젝트명`);
+    projectInput.dataset.collabKey = `project::${owner}|${project.name}::project`;
+    projectInput.addEventListener("focus", () => { projectInput.dataset.editBaseline = project.name; });
     projectInput.addEventListener("change", () => renameProject(owner, project.name, projectInput.value.trim(), projectInput));
 
     rail.append(handle, projectInput, remove);
@@ -613,6 +657,9 @@
   }
 
   function bindMergedTaskTitle(control, tasks, group) {
+    const baseline = normalizedTaskTitle(tasks[0]);
+    control.dataset.collabKey = `task::${tasks.map(task => task.task_id).join(",")}::title`;
+    control.addEventListener("focus", () => { control.dataset.editBaseline = normalizedTaskTitle(tasks[0]); });
     control.addEventListener("input", () => {
       const value = stripTaskMarker(control.value);
       if (control.value !== value) control.value = value;
@@ -630,6 +677,8 @@
 
   function bindTaskField(control, task, field) {
     const eventName = control.tagName === "TEXTAREA" ? "input" : "change";
+    control.dataset.collabKey = `task::${task.task_id}::${field}`;
+    control.addEventListener("focus", () => { control.dataset.editBaseline = String(task[field] ?? ""); });
     control.addEventListener(eventName, () => {
       const value = field === "title" ? stripTaskMarker(control.value) : control.value;
       task[field] = value;
@@ -1007,11 +1056,13 @@
         input.step = "1";
         input.className = "kpi-actual-input";
         input.value = row.actual;
+        input.dataset.collabKey = `kpi::${state.currentWeekId}|${row.criterion.owner}|${row.criterion.kpi_code}::actual`;
         input.addEventListener("change", () => setWeekKpi(row.criterion, { actual: num(input.value, 0) }, { immediate: true }));
         input.addEventListener("blur", () => scheduleAutoSave(true));
         actualCell.appendChild(input);
         const note = document.createElement("textarea");
         note.className = "kpi-note-input auto-grow";
+        note.dataset.collabKey = `kpi::${state.currentWeekId}|${row.criterion.owner}|${row.criterion.kpi_code}::note`;
         note.rows = 1;
         note.value = getWeekKpiRow(row.criterion)?.note || "";
         note.placeholder = "비고";
@@ -1490,16 +1541,17 @@
     const showLoading = options.showLoading === true;
     if (showLoading) setLoading(true, "변경사항을 저장하는 중입니다.");
     try {
-      stampUpdatedRecords();
       const data = serializableData();
       if (state.demoMode) {
         try {
           localStorage.setItem(DEMO_STORAGE_KEY, JSON.stringify(data));
+          state.remoteSnapshot = deepClone(data);
         } catch (_) {
           throw new Error("현재 환경에서는 브라우저 저장소를 사용할 수 없습니다. 웹서버 또는 GitHub Pages에서 실행하세요.");
         }
       } else {
-        await saveSheetsData(data);
+        await saveSheetsDataIncremental(data);
+        state.remoteSnapshot = deepClone(serializableData());
       }
       setDirty(state.changeVersion !== saveVersion);
       state.lastSavedAt = new Date();
@@ -1515,10 +1567,7 @@
   }
 
   function stampUpdatedRecords() {
-    const now = timestamp();
-    const by = state.userEmail || "web";
-    const week = currentWeek();
-    if (week) Object.assign(week, { updated_at: now, updated_by: by });
+    // v1.4부터는 변경된 행만 저장하며, 행별 updated_at / updated_by는 증분 저장 엔진이 갱신합니다.
   }
 
   function serializableData() {
@@ -1795,26 +1844,422 @@
     });
   }
 
-  async function saveSheetsData(data) {
+  async function saveSheetsDataIncremental(data) {
     if (!state.token && !(await refreshGoogleTokenSilently())) {
       throw new Error("Google 연결이 만료되었습니다. 상단의 Google 연결 버튼을 한 번 눌러 주세요.");
     }
-    const keys = Object.keys(SCHEMA);
-    await sheetsFetch("values:batchClear", {
-      method: "POST",
-      body: JSON.stringify({ ranges: keys.map(key => `${quotedSheet(key)}!A:AZ`) })
+
+    const baseline = state.remoteSnapshot || { weeks: [], tasks: [], kpis: [], criteria: [], decisions: [] };
+    const diffs = {};
+    for (const key of ["weeks", "tasks", "kpis", "decisions"]) {
+      const diff = diffCollection(key, baseline[key] || [], data[key] || []);
+      if (diff.added.length || diff.deleted.length || diff.changed.length) diffs[key] = diff;
+    }
+    const changedKeys = Object.keys(diffs);
+    if (!changedKeys.length) return true;
+
+    const remoteSheets = await fetchRemoteSheets(changedKeys);
+    const sheetIds = await ensureSheetIdMap();
+
+    // 1) 삭제: 다른 사용자가 이후 수정했다면 삭제 전에 확인합니다.
+    const deleteRequests = [];
+    for (const key of changedKeys) {
+      const diff = diffs[key];
+      const remote = remoteSheets[key];
+      if (!diff.deleted.length) continue;
+      const rowsToDelete = [];
+      for (const deleted of diff.deleted) {
+        const remoteRow = remote.byId.get(String(deleted.id));
+        if (!remoteRow) continue;
+        const baselineRow = deleted.baseline;
+        const changedByOther = meaningfulFields(key).some(field => !sameValue(remoteRow.item[field], baselineRow[field]));
+        if (changedByOther) {
+          const editor = remoteRow.item.updated_by || "다른 사용자";
+          const ok = window.confirm(`${editor}님이 삭제 대상 항목을 최근 수정했습니다.\n\n그래도 이 항목을 삭제할까요?`);
+          if (!ok) {
+            restoreLocalRow(key, remoteRow.item);
+            continue;
+          }
+        }
+        rowsToDelete.push(remoteRow.rowNumber);
+      }
+      rowsToDelete.sort((a, b) => b - a).forEach(rowNumber => {
+        deleteRequests.push({
+          deleteDimension: {
+            range: { sheetId: sheetIds[key], dimension: "ROWS", startIndex: rowNumber - 1, endIndex: rowNumber }
+          }
+        });
+      });
+    }
+    if (deleteRequests.length) {
+      await sheetsRootFetch(":batchUpdate", { method: "POST", body: JSON.stringify({ requests: deleteRequests }) });
+      Object.assign(remoteSheets, await fetchRemoteSheets(changedKeys));
+    }
+
+    // 2) 기존 행의 바뀐 필드만 저장합니다. 원격값이 기준값과 달라졌으면 충돌을 감지합니다.
+    const updates = [];
+    const now = timestamp();
+    const by = state.userEmail || "web";
+    for (const key of changedKeys) {
+      const diff = diffs[key];
+      const remote = remoteSheets[key];
+      for (const change of diff.changed) {
+        const remoteRow = remote.byId.get(String(change.id));
+        if (!remoteRow) {
+          showToast(`${sheetName(key)}의 항목이 다른 사용자에 의해 삭제되어 변경을 저장하지 못했습니다.`, true);
+          removeLocalRowById(key, change.id);
+          continue;
+        }
+        const currentRow = findLocalRow(key, change.id);
+        if (!currentRow) continue;
+        let rowChanged = false;
+        for (const field of change.fields) {
+          const baselineValue = change.baseline[field];
+          const remoteValue = remoteRow.item[field] ?? "";
+          const localValue = currentRow[field] ?? "";
+          if (!sameValue(remoteValue, baselineValue) && !sameValue(remoteValue, localValue)) {
+            const editor = remoteRow.item.updated_by || "다른 사용자";
+            const label = fieldLabel(key, field);
+            const ok = window.confirm(`${editor}님이 '${label}'을 먼저 수정했습니다.\n\n현재 값: ${shortValue(remoteValue)}\n내 값: ${shortValue(localValue)}\n\n내 값으로 덮어쓸까요?`);
+            if (!ok) {
+              currentRow[field] = normalizeRemoteField(key, field, remoteValue);
+              continue;
+            }
+          }
+          updates.push({ range: `${quotedSheet(key)}!${columnLetter(SCHEMA[key].indexOf(field) + 1)}${remoteRow.rowNumber}`, values: [[localValue]] });
+          rowChanged = true;
+        }
+        if (rowChanged) {
+          currentRow.updated_at = now;
+          currentRow.updated_by = by;
+          const updatedAtCol = SCHEMA[key].indexOf("updated_at") + 1;
+          const updatedByCol = SCHEMA[key].indexOf("updated_by") + 1;
+          if (updatedAtCol > 0) updates.push({ range: `${quotedSheet(key)}!${columnLetter(updatedAtCol)}${remoteRow.rowNumber}`, values: [[now]] });
+          if (updatedByCol > 0) updates.push({ range: `${quotedSheet(key)}!${columnLetter(updatedByCol)}${remoteRow.rowNumber}`, values: [[by]] });
+        }
+      }
+    }
+    if (updates.length) {
+      await sheetsFetch("values:batchUpdate", {
+        method: "POST",
+        body: JSON.stringify({ valueInputOption: "USER_ENTERED", data: updates })
+      });
+    }
+
+    // 3) 신규 행은 시트별로 append 합니다. 기존 행을 다시 쓰지 않습니다.
+    for (const key of changedKeys) {
+      const added = diffs[key].added.map(item => {
+        const local = findLocalRow(key, item.id) || item.current;
+        if (local && "updated_at" in local) local.updated_at = now;
+        if (local && "updated_by" in local) local.updated_by = by;
+        return local || item.current;
+      });
+      if (!added.length) continue;
+      const range = `${quotedSheet(key)}!A:${columnLetter(SCHEMA[key].length)}`;
+      await sheetsFetch(`values/${encodeURIComponent(range)}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`, {
+        method: "POST",
+        body: JSON.stringify({ majorDimension: "ROWS", values: added.map(row => SCHEMA[key].map(field => row[field] ?? "")) })
+      });
+    }
+
+    render();
+    return true;
+  }
+
+  function diffCollection(key, baselineRows, currentRows) {
+    const idField = KEY_FIELD[key];
+    const baselineMap = new Map(baselineRows.map(row => [String(row[idField]), row]));
+    const currentMap = new Map(currentRows.map(row => [String(row[idField]), row]));
+    const added = [];
+    const deleted = [];
+    const changed = [];
+    currentMap.forEach((row, id) => {
+      if (!baselineMap.has(id)) {
+        added.push({ id, current: row });
+        return;
+      }
+      const base = baselineMap.get(id);
+      const fields = meaningfulFields(key).filter(field => !sameValue(base[field], row[field]));
+      if (fields.length) changed.push({ id, baseline: base, current: row, fields });
     });
-    await sheetsFetch("values:batchUpdate", {
-      method: "POST",
-      body: JSON.stringify({
-        valueInputOption: "USER_ENTERED",
-        data: keys.map(key => ({
-          range: `${quotedSheet(key)}!A1`,
-          majorDimension: "ROWS",
-          values: [DISPLAY_HEADERS[key], SCHEMA[key], ...data[key].map(row => SCHEMA[key].map(header => row[header] ?? ""))]
-        }))
-      })
+    baselineMap.forEach((row, id) => {
+      if (!currentMap.has(id)) deleted.push({ id, baseline: row });
     });
+    return { added, deleted, changed };
+  }
+
+  function meaningfulFields(key) {
+    const idField = KEY_FIELD[key];
+    return SCHEMA[key].filter(field => field !== idField && !META_FIELDS.has(field));
+  }
+
+  async function fetchRemoteSheets(keys) {
+    if (!keys.length) return {};
+    const params = new URLSearchParams();
+    keys.forEach(key => params.append("ranges", `${quotedSheet(key)}!A:AZ`));
+    params.set("majorDimension", "ROWS");
+    const result = await sheetsFetch(`values:batchGet?${params}`);
+    const out = {};
+    (result.valueRanges || []).forEach((range, index) => {
+      out[keys[index]] = parseSheetRowsWithMeta(range.values || [], keys[index]);
+    });
+    return out;
+  }
+
+  function parseSheetRowsWithMeta(values, key) {
+    const headerRowIndex = values.slice(0, 5).findIndex(row => {
+      const candidate = row.map(value => String(value ?? ""));
+      return SCHEMA[key].every(header => candidate.includes(header));
+    });
+    if (headerRowIndex < 0) throw new Error(`${sheetName(key)} 시트에서 연동용 영문 헤더 행을 찾을 수 없습니다.`);
+    const headers = values[headerRowIndex].map(String);
+    const byId = new Map();
+    const rows = [];
+    const idField = KEY_FIELD[key];
+    values.slice(headerRowIndex + 1).forEach((row, offset) => {
+      if (!row.some(value => String(value ?? "").trim() !== "")) return;
+      const item = {};
+      headers.forEach((header, index) => { item[header] = row[index] ?? ""; });
+      const normalized = normalizeRows([item], key)[0] || item;
+      const rowNumber = headerRowIndex + 2 + offset;
+      rows.push({ rowNumber, item: normalized });
+      if (normalized[idField] !== undefined && normalized[idField] !== "") byId.set(String(normalized[idField]), { rowNumber, item: normalized });
+    });
+    return { rows, byId, headerRowIndex };
+  }
+
+  async function ensureSheetIdMap() {
+    if (state.sheetIdMap) return state.sheetIdMap;
+    const meta = await sheetsRootFetch("?fields=sheets.properties(sheetId,title)");
+    state.sheetIdMap = {};
+    (meta.sheets || []).forEach(sheet => {
+      const title = sheet.properties?.title;
+      const key = Object.keys(SCHEMA).find(item => sheetName(item) === title);
+      if (key) state.sheetIdMap[key] = sheet.properties.sheetId;
+      if (title === PRESENCE_SHEET_NAME) state.sheetIdMap.presence = sheet.properties.sheetId;
+    });
+    return state.sheetIdMap;
+  }
+
+  function findLocalRow(key, id) {
+    const idField = KEY_FIELD[key];
+    const collection = state[key] || [];
+    return collection.find(row => String(row[idField]) === String(id));
+  }
+
+  function removeLocalRowById(key, id) {
+    const idField = KEY_FIELD[key];
+    state[key] = (state[key] || []).filter(row => String(row[idField]) !== String(id));
+  }
+
+  function restoreLocalRow(key, remoteRow) {
+    const idField = KEY_FIELD[key];
+    const collection = state[key] || [];
+    const index = collection.findIndex(row => String(row[idField]) === String(remoteRow[idField]));
+    const normalized = normalizeRows([remoteRow], key)[0] || remoteRow;
+    if (index >= 0) collection[index] = normalized;
+    else collection.push(normalized);
+  }
+
+  function normalizeRemoteField(key, field, value) {
+    const row = normalizeRows([{ [field]: value }], key)[0] || { [field]: value };
+    return row[field] ?? value;
+  }
+
+  function sameValue(a, b) { return String(a ?? "") === String(b ?? ""); }
+  function shortValue(value) {
+    const text = String(value ?? "").replace(/\s+/g, " ").trim();
+    return text.length > 80 ? `${text.slice(0, 77)}...` : text || "(빈 값)";
+  }
+  function fieldLabel(key, field) {
+    const index = SCHEMA[key].indexOf(field);
+    const display = DISPLAY_HEADERS[key]?.[index] || field;
+    return String(display).replace(/\s*\(.+\)$/, "");
+  }
+  function columnLetter(number) {
+    let n = number;
+    let out = "";
+    while (n > 0) { n -= 1; out = String.fromCharCode(65 + (n % 26)) + out; n = Math.floor(n / 26); }
+    return out;
+  }
+
+  async function sheetsRootFetch(suffix, options = {}, allowAuthRetry = true) {
+    if (!state.token) throw new Error("Google 연결이 필요합니다.");
+    const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(CONFIG.SPREADSHEET_ID)}${suffix}`;
+    const response = await fetch(url, {
+      ...options,
+      headers: { Authorization: `Bearer ${state.token}`, "Content-Type": "application/json", ...(options.headers || {}) }
+    });
+    if (response.status === 401) {
+      clearGoogleSessionToken();
+      state.token = null;
+      state.tokenExpiresAt = 0;
+      applyModeUi();
+      if (allowAuthRetry && await refreshGoogleTokenSilently()) return sheetsRootFetch(suffix, options, false);
+      throw new Error("Google 인증이 만료되었습니다. 상단의 Google 연결 버튼을 한 번 눌러 주세요.");
+    }
+    if (!response.ok) {
+      let message = `Google Sheets API 오류 (${response.status})`;
+      try { message = (await response.json()).error?.message || message; } catch (_) {}
+      throw new Error(message);
+    }
+    return response.status === 204 ? {} : response.json();
+  }
+
+  async function ensurePresenceSheet() {
+    const map = await ensureSheetIdMap();
+    if (!map.presence) {
+      await sheetsRootFetch(":batchUpdate", {
+        method: "POST",
+        body: JSON.stringify({ requests: [{ addSheet: { properties: { title: PRESENCE_SHEET_NAME, hidden: true } } }] })
+      });
+      state.sheetIdMap = null;
+      await ensureSheetIdMap();
+      await sheetsFetch("values:batchUpdate", {
+        method: "POST",
+        body: JSON.stringify({
+          valueInputOption: "RAW",
+          data: [{ range: `'${PRESENCE_SHEET_NAME}'!A1`, majorDimension: "ROWS", values: [PRESENCE_DISPLAY_HEADERS, PRESENCE_SCHEMA] }]
+        })
+      });
+    }
+  }
+
+  async function startCollaborationRuntime() {
+    if (state.demoMode || !state.token) return;
+    await ensurePresenceSheet();
+    await upsertPresence();
+    await refreshPresence();
+    window.clearInterval(state.presencePollTimer);
+    window.clearInterval(state.presenceHeartbeatTimer);
+    window.clearInterval(state.remoteSyncTimer);
+    state.presencePollTimer = window.setInterval(() => refreshPresence().catch(() => {}), PRESENCE_POLL_MS);
+    state.presenceHeartbeatTimer = window.setInterval(() => upsertPresence().catch(() => {}), PRESENCE_HEARTBEAT_MS);
+    state.remoteSyncTimer = window.setInterval(() => syncRemoteDataIfIdle().catch(() => {}), REMOTE_SYNC_MS);
+  }
+
+  function loadPresenceSessionId() {
+    const key = "pharmearth-weekly-presence-session-v1";
+    try {
+      let value = sessionStorage.getItem(key);
+      if (!value) { value = `SES-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`; sessionStorage.setItem(key, value); }
+      return value;
+    } catch (_) { return `SES-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`; }
+  }
+
+  async function upsertPresence(edit = state.currentEditPresence) {
+    if (state.demoMode || !state.token || !state.userEmail) return;
+    await ensurePresenceSheet();
+    const values = [[
+      state.presenceSessionId,
+      state.userEmail,
+      state.currentWeekId || "",
+      edit?.entityType || "",
+      edit?.entityId || "",
+      edit?.field || "",
+      timestamp(),
+      state.presenceStartedAt
+    ]];
+
+    if (!state.presenceRowNumber) {
+      const rows = await fetchPresenceRows();
+      const now = Date.now();
+      const exact = rows.find(row => row.item.session_id === state.presenceSessionId);
+      const reusable = rows.find(row => row.item.user_email === state.userEmail && (!Date.parse(row.item.last_seen || "") || now - Date.parse(row.item.last_seen || "") > PRESENCE_STALE_MS));
+      state.presenceRowNumber = (exact || reusable)?.rowNumber || null;
+    }
+
+    if (state.presenceRowNumber) {
+      await sheetsFetch("values:batchUpdate", {
+        method: "POST",
+        body: JSON.stringify({ valueInputOption: "RAW", data: [{ range: `'${PRESENCE_SHEET_NAME}'!A${state.presenceRowNumber}:H${state.presenceRowNumber}`, values }] })
+      });
+    } else {
+      const range = `'${PRESENCE_SHEET_NAME}'!A:H`;
+      const result = await sheetsFetch(`values/${encodeURIComponent(range)}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`, {
+        method: "POST",
+        body: JSON.stringify({ majorDimension: "ROWS", values })
+      });
+      const updatedRange = result?.updates?.updatedRange || "";
+      const match = updatedRange.match(/!A(\d+):/);
+      if (match) state.presenceRowNumber = Number(match[1]);
+    }
+  }
+
+  async function fetchPresenceRows() {
+    const params = new URLSearchParams();
+    params.append("ranges", `'${PRESENCE_SHEET_NAME}'!A:H`);
+    params.set("majorDimension", "ROWS");
+    const result = await sheetsFetch(`values:batchGet?${params}`);
+    const values = result.valueRanges?.[0]?.values || [];
+    const headerIndex = values.slice(0, 5).findIndex(row => PRESENCE_SCHEMA.every(header => row.map(String).includes(header)));
+    if (headerIndex < 0) return [];
+    const headers = values[headerIndex].map(String);
+    return values.slice(headerIndex + 1).map((row, offset) => {
+      const item = {};
+      headers.forEach((header, index) => { item[header] = row[index] ?? ""; });
+      return { rowNumber: headerIndex + 2 + offset, item };
+    }).filter(row => row.item.session_id);
+  }
+
+  async function refreshPresence() {
+    if (state.demoMode || !state.token) return;
+    const now = Date.now();
+    const rows = await fetchPresenceRows();
+    state.presenceRows = rows.map(row => row.item).filter(item => {
+      const t = Date.parse(item.last_seen || "");
+      return Number.isFinite(t) && now - t <= PRESENCE_STALE_MS;
+    });
+    renderPresenceStatus();
+    applyPresenceIndicators();
+  }
+
+  function renderPresenceStatus() {
+    if (!el.activeUsersBadge) return;
+    const unique = [...new Set(state.presenceRows.map(row => row.user_email).filter(Boolean))];
+    el.activeUsersBadge.textContent = `접속 ${unique.length || (state.userEmail ? 1 : 0)}명`;
+    el.activeUsersBadge.title = unique.length ? unique.join("\n") : "현재 접속자";
+  }
+
+  function applyPresenceIndicators() {
+    document.querySelectorAll("[data-collab-key].remote-editing").forEach(node => {
+      node.classList.remove("remote-editing");
+      node.removeAttribute("data-remote-editor");
+    });
+    state.presenceRows.filter(row => row.session_id !== state.presenceSessionId && row.entity_type && row.entity_id && row.field).forEach(row => {
+      const key = `${row.entity_type}::${row.entity_id}::${row.field}`;
+      document.querySelectorAll("[data-collab-key]").forEach(node => {
+        const nodeKey = node.dataset.collabKey || "";
+        const match = nodeKey === key || (row.entity_type === "task" && nodeKey.startsWith("task::") && nodeKey.endsWith(`::${row.field}`) && nodeKey.split("::")[1].split(",").includes(row.entity_id));
+        if (!match) return;
+        node.classList.add("remote-editing");
+        node.dataset.remoteEditor = row.user_email;
+        node.title = `${row.user_email} 편집 중`;
+      });
+    });
+  }
+
+  async function setPresenceEditing(entityType, entityId, field) {
+    state.currentEditPresence = { entityType, entityId, field };
+    await upsertPresence(state.currentEditPresence);
+  }
+  async function clearPresenceEditing() {
+    if (!state.currentEditPresence) return;
+    state.currentEditPresence = null;
+    await upsertPresence(null);
+  }
+
+  async function syncRemoteDataIfIdle() {
+    if (state.demoMode || !state.token || state.loading || state.savePromise || state.dirty) return;
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && active.matches("input, textarea, select, [contenteditable='true']")) return;
+    const currentWeekId = state.currentWeekId;
+    const data = await loadSheetsData();
+    assignData(data);
+    if (currentWeekId && state.weeks.some(week => week.week_id === currentWeekId)) state.currentWeekId = currentWeekId;
+    state.remoteSnapshot = deepClone(serializableData());
+    render();
+    applyPresenceIndicators();
   }
 
   async function sheetsFetch(path, options = {}, allowAuthRetry = true) {
@@ -1942,7 +2387,7 @@
         ? Math.round(27 * scale)
         : Math.round(34 * scale);
 
-    textarea.style.setProperty(  "height",  "1px",  textarea.classList.contains("project-name-input") ? "important" : "");
+    textarea.style.height = "1px";
     const requiredHeight = Math.ceil(textarea.scrollHeight + borderY);
     const hasLineBreak = String(textarea.value || "").includes("\n");
     const isSingleLine = !hasLineBreak && requiredHeight <= Math.ceil(singleLineHeight + lineHeight * 0.35);
