@@ -306,10 +306,13 @@
   function assignData(data) {
     state.weeks = normalizeRows(data.weeks || [], "weeks");
     state.tasks = normalizeRows(data.tasks || [], "tasks").filter(task => OWNER_ORDER.includes(task.owner));
+    ensureLocalStableIds(state.tasks, "tasks", "TASK");
     normalizeTaskTitles();
     state.kpis = normalizeRows(data.kpis || [], "kpis").filter(kpi => OWNER_ORDER.includes(kpi.owner));
+    ensureLocalStableIds(state.kpis, "kpis", "KPI");
     state.criteria = normalizeRows(data.criteria || [], "criteria").filter(item => OWNER_ORDER.includes(item.owner) && item.active !== "N");
     state.decisions = normalizeRows(data.decisions || [], "decisions");
+    ensureLocalStableIds(state.decisions, "decisions", "DEC");
     const weeks = sortedWeeks();
     if (!state.currentWeekId || !weeks.some(week => week.week_id === state.currentWeekId)) {
       state.currentWeekId = weeks[0]?.week_id || null;
@@ -341,6 +344,20 @@
         }
         return item;
       });
+  }
+
+  function ensureLocalStableIds(rows, key, prefix) {
+    const idField = KEY_FIELD[key];
+    if (!idField) return;
+    const seen = new Set();
+    rows.forEach(row => {
+      let value = String(row[idField] ?? "").trim();
+      if (!value || seen.has(value)) {
+        value = makeId(prefix);
+        row[idField] = value;
+      }
+      seen.add(value);
+    });
   }
 
   function render() {
@@ -1861,6 +1878,68 @@
     const remoteSheets = await fetchRemoteSheets(changedKeys);
     const sheetIds = await ensureSheetIdMap();
 
+    // 저장 전에 모든 변경 행의 원격 위치를 먼저 확정합니다.
+    // 구버전 데이터의 ID가 비어 있거나 중복/불일치하더라도 구조값으로 한 번 더 찾아 복구합니다.
+    // 끝내 찾지 못한 항목이 있으면 어떤 셀도 쓰기 전에 중단하여 부분 저장과 잘못된 "저장 완료"를 막습니다.
+    const resolvedChanges = new Map();
+    const idRepairs = [];
+    const unresolvedChanges = [];
+    for (const key of changedKeys) {
+      const diff = diffs[key];
+      const remote = remoteSheets[key];
+      for (const change of diff.changed) {
+        const currentRow = findLocalRow(key, change.id);
+        if (!currentRow) continue;
+        let remoteRow = remote.byId.get(String(change.id));
+        if (!remoteRow) {
+          remoteRow = findFallbackRemoteRow(key, change.baseline, currentRow, remote);
+          if (remoteRow) {
+            const idField = KEY_FIELD[key];
+            const remoteId = String(remoteRow.item[idField] ?? "").trim();
+            const localId = String(change.id ?? "").trim();
+
+            if (!remoteId && localId) {
+              // 시트의 고유 ID가 비어 있던 레거시 행: 현재 브라우저의 안정 ID를 해당 행에 보강합니다.
+              remoteRow.item[idField] = localId;
+              remote.byId.set(localId, remoteRow);
+              idRepairs.push({ key, rowNumber: remoteRow.rowNumber, field: idField, value: localId });
+            } else if (remoteId && remoteId !== localId) {
+              const duplicateRemoteId = (state[key] || []).some(row =>
+                row !== currentRow && String(row[idField] ?? "").trim() === remoteId
+              );
+              if (duplicateRemoteId && localId) {
+                // 원격 시트에 중복 ID가 있으면 다른 행과 충돌하지 않도록 현재 행의 새 안정 ID로 복구합니다.
+                remoteRow.item[idField] = localId;
+                remote.byId.set(localId, remoteRow);
+                idRepairs.push({ key, rowNumber: remoteRow.rowNumber, field: idField, value: localId });
+              } else {
+                // 단순 불일치라면 시트의 정상 ID를 정본으로 사용합니다.
+                currentRow[idField] = remoteId;
+              }
+            }
+          }
+        }
+
+        if (!remoteRow) {
+          unresolvedChanges.push({ key, change, currentRow });
+          continue;
+        }
+        resolvedChanges.set(`${key}::${change.id}`, remoteRow);
+      }
+    }
+
+    if (unresolvedChanges.length) {
+      const labels = unresolvedChanges.slice(0, 3).map(item => {
+        const row = item.currentRow || {};
+        if (item.key === "tasks") return `${row.owner || ""} / ${row.project || ""} / ${row.title || "작업"}`.replace(/^\s*\/\s*/, "");
+        if (item.key === "kpis") return `${row.owner || ""} / ${row.kpi_name || row.kpi_code || "KPI"}`;
+        if (item.key === "decisions") return row.item || "의사결정";
+        return sheetName(item.key);
+      });
+      const more = unresolvedChanges.length > 3 ? ` 외 ${unresolvedChanges.length - 3}건` : "";
+      throw new Error(`저장 대상 행을 Google Sheets에서 확인하지 못했습니다: ${labels.join(", ")}${more}. 다른 사용자 삭제로 단정하지 않고 저장을 중단했습니다. '최근 주차'로 최신화한 뒤 다시 시도해 주세요.`);
+    }
+
     // 1) 삭제: 다른 사용자가 이후 수정했다면 삭제 전에 확인합니다.
     const deleteRequests = [];
     for (const key of changedKeys) {
@@ -1897,20 +1976,18 @@
     }
 
     // 2) 기존 행의 바뀐 필드만 저장합니다. 원격값이 기준값과 달라졌으면 충돌을 감지합니다.
-    const updates = [];
+    const updates = idRepairs.map(repair => ({
+      range: `${quotedSheet(repair.key)}!${columnLetter(SCHEMA[repair.key].indexOf(repair.field) + 1)}${repair.rowNumber}`,
+      values: [[repair.value]]
+    }));
     const now = timestamp();
     const by = state.userEmail || "web";
     for (const key of changedKeys) {
       const diff = diffs[key];
       const remote = remoteSheets[key];
       for (const change of diff.changed) {
-        const remoteRow = remote.byId.get(String(change.id));
-        if (!remoteRow) {
-          showToast(`${sheetName(key)}의 항목이 다른 사용자에 의해 삭제되어 변경을 저장하지 못했습니다.`, true);
-          removeLocalRowById(key, change.id);
-          continue;
-        }
-        const currentRow = findLocalRow(key, change.id);
+        const remoteRow = resolvedChanges.get(`${key}::${change.id}`) || remote.byId.get(String(change.id));
+        const currentRow = findLocalRow(key, change.id) || (remoteRow ? findLocalRow(key, remoteRow.item[KEY_FIELD[key]]) : null);
         if (!currentRow) continue;
         let rowChanged = false;
         for (const field of change.fields) {
@@ -2039,6 +2116,59 @@
       if (title === PRESENCE_SHEET_NAME) state.sheetIdMap.presence = sheet.properties.sheetId;
     });
     return state.sheetIdMap;
+  }
+
+  function fallbackIdentityFields(key) {
+    if (key === "tasks") return ["week_id", "owner", "period", "project_order", "sort_order"];
+    if (key === "kpis") return ["week_id", "kpi_code", "owner", "sort_order"];
+    if (key === "decisions") return ["week_id", "sort_order"];
+    if (key === "weeks") return ["start_date", "end_date"];
+    return [];
+  }
+
+  function fallbackSecondaryFields(key) {
+    if (key === "tasks") return ["project", "title", "details", "due_date"];
+    if (key === "kpis") return ["kpi_name", "actual", "note"];
+    if (key === "decisions") return ["item", "summary", "decision", "note"];
+    return [];
+  }
+
+  function findFallbackRemoteRow(key, baselineRow, currentRow, remote) {
+    if (!remote?.rows?.length) return null;
+    const reference = baselineRow || currentRow || {};
+    const primaryFields = fallbackIdentityFields(key);
+    if (!primaryFields.length) return null;
+
+    let candidates = remote.rows.filter(entry =>
+      primaryFields.every(field => sameValue(entry.item[field], reference[field]))
+    );
+
+    if (candidates.length === 1) return candidates[0];
+    if (!candidates.length) {
+      // 정렬값 하나가 구버전에서 비어 있던 경우를 위해 핵심 식별값만으로 한 번 더 좁힙니다.
+      const relaxedFields = key === "tasks"
+        ? ["week_id", "owner", "period"]
+        : key === "kpis"
+          ? ["week_id", "kpi_code", "owner"]
+          : key === "decisions"
+            ? ["week_id"]
+            : primaryFields;
+      candidates = remote.rows.filter(entry =>
+        relaxedFields.every(field => sameValue(entry.item[field], reference[field]))
+      );
+    }
+    if (candidates.length === 1) return candidates[0];
+    if (!candidates.length) return null;
+
+    const secondaryFields = fallbackSecondaryFields(key);
+    const scored = candidates.map(entry => ({
+      entry,
+      score: secondaryFields.reduce((score, field) => score + (sameValue(entry.item[field], reference[field]) ? 1 : 0), 0)
+    })).sort((a, b) => b.score - a.score);
+
+    if (!scored.length || scored[0].score <= 0) return null;
+    if (scored.length > 1 && scored[0].score === scored[1].score) return null;
+    return scored[0].entry;
   }
 
   function findLocalRow(key, id) {
