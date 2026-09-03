@@ -23,6 +23,8 @@
   const PRESENCE_HEARTBEAT_MS = 45000;
   const PRESENCE_STALE_MS = 120000;
   const REMOTE_SYNC_MS = 20000;
+  const SAVE_VERIFY_RETRIES = 3;
+  const SAVE_VERIFY_DELAY_MS = 320;
   const KEY_FIELD = { weeks: "week_id", tasks: "task_id", kpis: "kpi_id", criteria: "kpi_code", decisions: "decision_id" };
   const META_FIELDS = new Set(["updated_at", "updated_by", "created_at"]);
   const PLACEHOLDER_CLIENT_ID = "YOUR_OAUTH_CLIENT_ID.apps.googleusercontent.com";
@@ -108,7 +110,8 @@
     presenceHeartbeatTimer: null,
     remoteSyncTimer: null,
     currentEditPresence: null,
-    sheetIdMap: null
+    sheetIdMap: null,
+    saveVerificationInProgress: false
   };
 
   const el = {};
@@ -270,6 +273,11 @@
       if (!state.dirty) return;
       event.preventDefault();
       event.returnValue = "";
+    });
+
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState !== "hidden" || !state.dirty || state.demoMode || !state.token || state.authenticating) return;
+      scheduleAutoSave(true);
     });
   }
 
@@ -1556,29 +1564,42 @@
     if (typeof options === "string") options = { message: options };
     const saveVersion = state.changeVersion;
     const showLoading = options.showLoading === true;
-    if (showLoading) setLoading(true, "변경사항을 저장하는 중입니다.");
+    if (showLoading) setLoading(true, "변경사항을 저장하고 실제 반영 여부를 확인하는 중입니다.");
+    document.body.classList.add("is-saving");
     try {
       const data = serializableData();
+      let saveResult = { snapshot: deepClone(data), changedKeys: [] };
       if (state.demoMode) {
         try {
           localStorage.setItem(DEMO_STORAGE_KEY, JSON.stringify(data));
-          state.remoteSnapshot = deepClone(data);
+          saveResult.snapshot = deepClone(data);
         } catch (_) {
           throw new Error("현재 환경에서는 브라우저 저장소를 사용할 수 없습니다. 웹서버 또는 GitHub Pages에서 실행하세요.");
         }
       } else {
-        await saveSheetsDataIncremental(data);
-        state.remoteSnapshot = deepClone(serializableData());
+        saveResult = await saveSheetsDataIncremental(data);
       }
-      setDirty(state.changeVersion !== saveVersion);
+
+      state.remoteSnapshot = deepClone(saveResult.snapshot || data);
+      const hasNewerLocalChanges = state.changeVersion !== saveVersion;
+      setDirty(hasNewerLocalChanges);
+
+      if (!state.demoMode && !hasNewerLocalChanges && saveResult.changedKeys?.length) {
+        reconcileVerifiedCollections(saveResult.snapshot, saveResult.changedKeys);
+        render();
+        applyPresenceIndicators();
+      }
+
       state.lastSavedAt = new Date();
       showToast(options.message || formatSaveToast(state.lastSavedAt));
-      setStatus(state.demoMode ? "자동 저장 완료" : "Google Sheets 자동 저장 완료");
+      setStatus(state.demoMode ? "자동 저장 완료" : "Google Sheets 저장·검증 완료");
       return true;
     } catch (error) {
+      setDirty(true);
       handleError(error);
       return false;
     } finally {
+      document.body.classList.remove("is-saving");
       if (showLoading) setLoading(false);
     }
   }
@@ -1873,20 +1894,70 @@
       if (diff.added.length || diff.deleted.length || diff.changed.length) diffs[key] = diff;
     }
     const changedKeys = Object.keys(diffs);
-    if (!changedKeys.length) return true;
+    if (!changedKeys.length) return { snapshot: deepClone(baseline), changedKeys: [] };
 
-    const remoteSheets = await fetchRemoteSheets(changedKeys);
     const sheetIds = await ensureSheetIdMap();
+    const expected = { fields: [], added: [], deleted: [] };
 
-    // 저장 전에 모든 변경 행의 원격 위치를 먼저 확정합니다.
-    // 구버전 데이터의 ID가 비어 있거나 중복/불일치하더라도 구조값으로 한 번 더 찾아 복구합니다.
-    // 끝내 찾지 못한 항목이 있으면 어떤 셀도 쓰기 전에 중단하여 부분 저장과 잘못된 "저장 완료"를 막습니다.
-    const resolvedChanges = new Map();
+    for (const key of changedKeys) {
+      const diff = diffs[key];
+      if (!diff.deleted.length) continue;
+      for (const deleted of diff.deleted) {
+        let remote = (await fetchRemoteSheets([key]))[key];
+        let remoteRow = remote.byId.get(String(deleted.id)) || findFallbackRemoteRow(key, deleted.baseline, deleted.baseline, remote);
+        if (!remoteRow) {
+          expected.deleted.push({ key, id: String(deleted.id), baseline: deleted.baseline, alreadyMissing: true });
+          continue;
+        }
+
+        const changedByOther = meaningfulFields(key).some(field => !sameValue(remoteRow.item[field], deleted.baseline[field]));
+        if (changedByOther) {
+          const editor = remoteRow.item.updated_by || "다른 사용자";
+          const ok = window.confirm(`${editor}님이 삭제 대상 항목을 최근 수정했습니다.
+
+그래도 이 항목을 삭제할까요?`);
+          if (!ok) {
+            restoreLocalRow(key, remoteRow.item);
+            continue;
+          }
+        }
+
+        const idField = KEY_FIELD[key];
+        const deleteExpectation = {
+          key,
+          id: String(remoteRow.item[idField] || deleted.id || ""),
+          baseline: remoteRow.item,
+          alreadyMissing: false
+        };
+        expected.deleted.push(deleteExpectation);
+
+        await sheetsRootFetch(":batchUpdate", {
+          method: "POST",
+          body: JSON.stringify({ requests: [{
+            deleteDimension: {
+              range: { sheetId: sheetIds[key], dimension: "ROWS", startIndex: remoteRow.rowNumber - 1, endIndex: remoteRow.rowNumber }
+            }
+          }] })
+        });
+
+        remote = (await fetchRemoteSheets([key]))[key];
+        const stillThere = deleteExpectation.id
+          ? remote.byId.get(deleteExpectation.id)
+          : findFallbackRemoteRow(key, deleted.baseline, deleted.baseline, remote);
+        if (stillThere) throw new Error(`${sheetName(key)}에서 삭제 결과를 확인하지 못했습니다. 저장을 중단했습니다.`);
+      }
+    }
+
+    let remoteSheets = await fetchRemoteSheets(changedKeys);
     const idRepairs = [];
+    const recoveryAdds = {};
+    const resolvedChanges = new Map();
     const unresolvedChanges = [];
+
     for (const key of changedKeys) {
       const diff = diffs[key];
       const remote = remoteSheets[key];
+      recoveryAdds[key] = [];
       for (const change of diff.changed) {
         const currentRow = findLocalRow(key, change.id);
         if (!currentRow) continue;
@@ -1897,23 +1968,17 @@
             const idField = KEY_FIELD[key];
             const remoteId = String(remoteRow.item[idField] ?? "").trim();
             const localId = String(change.id ?? "").trim();
-
             if (!remoteId && localId) {
-              // 시트의 고유 ID가 비어 있던 레거시 행: 현재 브라우저의 안정 ID를 해당 행에 보강합니다.
               remoteRow.item[idField] = localId;
               remote.byId.set(localId, remoteRow);
-              idRepairs.push({ key, rowNumber: remoteRow.rowNumber, field: idField, value: localId });
+              idRepairs.push({ key, rowNumber: remoteRow.rowNumber, field: idField, value: localId, id: localId });
             } else if (remoteId && remoteId !== localId) {
-              const duplicateRemoteId = (state[key] || []).some(row =>
-                row !== currentRow && String(row[idField] ?? "").trim() === remoteId
-              );
+              const duplicateRemoteId = (state[key] || []).some(row => row !== currentRow && String(row[idField] ?? "").trim() === remoteId);
               if (duplicateRemoteId && localId) {
-                // 원격 시트에 중복 ID가 있으면 다른 행과 충돌하지 않도록 현재 행의 새 안정 ID로 복구합니다.
                 remoteRow.item[idField] = localId;
                 remote.byId.set(localId, remoteRow);
-                idRepairs.push({ key, rowNumber: remoteRow.rowNumber, field: idField, value: localId });
+                idRepairs.push({ key, rowNumber: remoteRow.rowNumber, field: idField, value: localId, id: localId });
               } else {
-                // 단순 불일치라면 시트의 정상 ID를 정본으로 사용합니다.
                 currentRow[idField] = remoteId;
               }
             }
@@ -1921,6 +1986,18 @@
         }
 
         if (!remoteRow) {
+          const label = key === "tasks"
+            ? `${currentRow.owner || ""} / ${currentRow.project || ""} / ${currentRow.title || "작업"}`
+            : key === "kpis"
+              ? `${currentRow.owner || ""} / ${currentRow.kpi_name || currentRow.kpi_code || "KPI"}`
+              : key === "decisions" ? (currentRow.item || "의사결정") : sheetName(key);
+          const restore = window.confirm(`Google Sheets에서 '${label}' 행을 찾지 못했습니다.
+
+현재 화면에 작성된 내용을 새 행으로 복구할까요?`);
+          if (restore) {
+            recoveryAdds[key].push(currentRow);
+            continue;
+          }
           unresolvedChanges.push({ key, change, currentRow });
           continue;
         }
@@ -1937,58 +2014,27 @@
         return sheetName(item.key);
       });
       const more = unresolvedChanges.length > 3 ? ` 외 ${unresolvedChanges.length - 3}건` : "";
-      throw new Error(`저장 대상 행을 Google Sheets에서 확인하지 못했습니다: ${labels.join(", ")}${more}. 다른 사용자 삭제로 단정하지 않고 저장을 중단했습니다. '최근 주차'로 최신화한 뒤 다시 시도해 주세요.`);
+      throw new Error(`저장 대상 행을 확인하지 못했습니다: ${labels.join(", ")}${more}. 저장하지 않은 내용은 화면에 유지됩니다.`);
     }
 
-    // 1) 삭제: 다른 사용자가 이후 수정했다면 삭제 전에 확인합니다.
-    const deleteRequests = [];
-    for (const key of changedKeys) {
-      const diff = diffs[key];
-      const remote = remoteSheets[key];
-      if (!diff.deleted.length) continue;
-      const rowsToDelete = [];
-      for (const deleted of diff.deleted) {
-        const remoteRow = remote.byId.get(String(deleted.id));
-        if (!remoteRow) continue;
-        const baselineRow = deleted.baseline;
-        const changedByOther = meaningfulFields(key).some(field => !sameValue(remoteRow.item[field], baselineRow[field]));
-        if (changedByOther) {
-          const editor = remoteRow.item.updated_by || "다른 사용자";
-          const ok = window.confirm(`${editor}님이 삭제 대상 항목을 최근 수정했습니다.\n\n그래도 이 항목을 삭제할까요?`);
-          if (!ok) {
-            restoreLocalRow(key, remoteRow.item);
-            continue;
-          }
-        }
-        rowsToDelete.push(remoteRow.rowNumber);
-      }
-      rowsToDelete.sort((a, b) => b - a).forEach(rowNumber => {
-        deleteRequests.push({
-          deleteDimension: {
-            range: { sheetId: sheetIds[key], dimension: "ROWS", startIndex: rowNumber - 1, endIndex: rowNumber }
-          }
-        });
-      });
-    }
-    if (deleteRequests.length) {
-      await sheetsRootFetch(":batchUpdate", { method: "POST", body: JSON.stringify({ requests: deleteRequests }) });
-      Object.assign(remoteSheets, await fetchRemoteSheets(changedKeys));
-    }
+    const updates = [];
+    idRepairs.forEach(repair => {
+      updates.push({ range: `${quotedSheet(repair.key)}!${columnLetter(SCHEMA[repair.key].indexOf(repair.field) + 1)}${repair.rowNumber}`, values: [[repair.value]] });
+      expected.fields.push({ key: repair.key, id: repair.id, field: repair.field, value: repair.value });
+    });
 
-    // 2) 기존 행의 바뀐 필드만 저장합니다. 원격값이 기준값과 달라졌으면 충돌을 감지합니다.
-    const updates = idRepairs.map(repair => ({
-      range: `${quotedSheet(repair.key)}!${columnLetter(SCHEMA[repair.key].indexOf(repair.field) + 1)}${repair.rowNumber}`,
-      values: [[repair.value]]
-    }));
     const now = timestamp();
     const by = state.userEmail || "web";
     for (const key of changedKeys) {
       const diff = diffs[key];
       const remote = remoteSheets[key];
       for (const change of diff.changed) {
+        if (recoveryAdds[key].some(row => String(row[KEY_FIELD[key]]) === String(change.id))) continue;
         const remoteRow = resolvedChanges.get(`${key}::${change.id}`) || remote.byId.get(String(change.id));
         const currentRow = findLocalRow(key, change.id) || (remoteRow ? findLocalRow(key, remoteRow.item[KEY_FIELD[key]]) : null);
-        if (!currentRow) continue;
+        if (!remoteRow || !currentRow) continue;
+        const idField = KEY_FIELD[key];
+        const canonicalId = String(remoteRow.item[idField] || currentRow[idField] || change.id);
         let rowChanged = false;
         for (const field of change.fields) {
           const baselineValue = change.baseline[field];
@@ -1997,13 +2043,19 @@
           if (!sameValue(remoteValue, baselineValue) && !sameValue(remoteValue, localValue)) {
             const editor = remoteRow.item.updated_by || "다른 사용자";
             const label = fieldLabel(key, field);
-            const ok = window.confirm(`${editor}님이 '${label}'을 먼저 수정했습니다.\n\n현재 값: ${shortValue(remoteValue)}\n내 값: ${shortValue(localValue)}\n\n내 값으로 덮어쓸까요?`);
+            const ok = window.confirm(`${editor}님이 '${label}'을 먼저 수정했습니다.
+
+현재 값: ${shortValue(remoteValue)}
+내 값: ${shortValue(localValue)}
+
+내 값으로 덮어쓸까요?`);
             if (!ok) {
               currentRow[field] = normalizeRemoteField(key, field, remoteValue);
               continue;
             }
           }
           updates.push({ range: `${quotedSheet(key)}!${columnLetter(SCHEMA[key].indexOf(field) + 1)}${remoteRow.rowNumber}`, values: [[localValue]] });
+          expected.fields.push({ key, id: canonicalId, field, value: localValue });
           rowChanged = true;
         }
         if (rowChanged) {
@@ -2011,36 +2063,135 @@
           currentRow.updated_by = by;
           const updatedAtCol = SCHEMA[key].indexOf("updated_at") + 1;
           const updatedByCol = SCHEMA[key].indexOf("updated_by") + 1;
-          if (updatedAtCol > 0) updates.push({ range: `${quotedSheet(key)}!${columnLetter(updatedAtCol)}${remoteRow.rowNumber}`, values: [[now]] });
-          if (updatedByCol > 0) updates.push({ range: `${quotedSheet(key)}!${columnLetter(updatedByCol)}${remoteRow.rowNumber}`, values: [[by]] });
+          if (updatedAtCol > 0) {
+            updates.push({ range: `${quotedSheet(key)}!${columnLetter(updatedAtCol)}${remoteRow.rowNumber}`, values: [[now]] });
+            expected.fields.push({ key, id: canonicalId, field: "updated_at", value: now });
+          }
+          if (updatedByCol > 0) {
+            updates.push({ range: `${quotedSheet(key)}!${columnLetter(updatedByCol)}${remoteRow.rowNumber}`, values: [[by]] });
+            expected.fields.push({ key, id: canonicalId, field: "updated_by", value: by });
+          }
         }
       }
     }
+
     if (updates.length) {
       await sheetsFetch("values:batchUpdate", {
         method: "POST",
-        body: JSON.stringify({ valueInputOption: "USER_ENTERED", data: updates })
+        body: JSON.stringify({ valueInputOption: "RAW", data: updates })
       });
     }
 
-    // 3) 신규 행은 시트별로 append 합니다. 기존 행을 다시 쓰지 않습니다.
     for (const key of changedKeys) {
-      const added = diffs[key].added.map(item => {
-        const local = findLocalRow(key, item.id) || item.current;
-        if (local && "updated_at" in local) local.updated_at = now;
-        if (local && "updated_by" in local) local.updated_by = by;
-        return local || item.current;
-      });
-      if (!added.length) continue;
-      const range = `${quotedSheet(key)}!A:${columnLetter(SCHEMA[key].length)}`;
-      await sheetsFetch(`values/${encodeURIComponent(range)}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`, {
-        method: "POST",
-        body: JSON.stringify({ majorDimension: "ROWS", values: added.map(row => SCHEMA[key].map(field => row[field] ?? "")) })
-      });
+      const idField = KEY_FIELD[key];
+      const candidates = [
+        ...diffs[key].added.map(item => findLocalRow(key, item.id) || item.current),
+        ...(recoveryAdds[key] || [])
+      ].filter(Boolean);
+      if (!candidates.length) continue;
+
+      let remote = (await fetchRemoteSheets([key]))[key];
+      for (const local of candidates) {
+        const id = String(local[idField] || "");
+        const existing = id ? remote.byId.get(id) : null;
+        if (existing) {
+          const repairUpdates = [];
+          meaningfulFields(key).forEach(field => {
+            if (sameValue(existing.item[field], local[field])) return;
+            repairUpdates.push({ range: `${quotedSheet(key)}!${columnLetter(SCHEMA[key].indexOf(field) + 1)}${existing.rowNumber}`, values: [[local[field] ?? ""]] });
+            expected.fields.push({ key, id, field, value: local[field] ?? "" });
+          });
+          if (repairUpdates.length) {
+            await sheetsFetch("values:batchUpdate", { method: "POST", body: JSON.stringify({ valueInputOption: "RAW", data: repairUpdates }) });
+          }
+          continue;
+        }
+
+        if ("updated_at" in local) local.updated_at = now;
+        if ("updated_by" in local) local.updated_by = by;
+        const range = `${quotedSheet(key)}!A:${columnLetter(SCHEMA[key].length)}`;
+        await sheetsFetch(`values/${encodeURIComponent(range)}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`, {
+          method: "POST",
+          body: JSON.stringify({ majorDimension: "ROWS", values: [SCHEMA[key].map(field => local[field] ?? "")] })
+        });
+        expected.added.push({ key, id: String(local[idField] || ""), row: pick(local, SCHEMA[key]) });
+        remote = (await fetchRemoteSheets([key]))[key];
+      }
     }
 
-    render();
-    return true;
+    const verification = await verifyIncrementalSave(expected, changedKeys);
+    return { snapshot: buildVerifiedSnapshot(baseline, verification.remoteSheets, changedKeys), changedKeys };
+  }
+
+  async function verifyIncrementalSave(expected, changedKeys) {
+    let lastProblems = [];
+    let remoteSheets = null;
+    for (let attempt = 0; attempt < SAVE_VERIFY_RETRIES; attempt += 1) {
+      if (attempt) await delay(SAVE_VERIFY_DELAY_MS * attempt);
+      remoteSheets = await fetchRemoteSheets(changedKeys);
+      const problems = [];
+
+      expected.fields.forEach(item => {
+        const remoteRow = remoteSheets[item.key]?.byId.get(String(item.id));
+        if (!remoteRow) {
+          problems.push(`${sheetName(item.key)}:${item.id} 행 없음`);
+          return;
+        }
+        if (!sameValue(remoteRow.item[item.field], item.value)) problems.push(`${sheetName(item.key)}:${item.id}.${item.field} 값 불일치`);
+      });
+
+      expected.added.forEach(item => {
+        const remoteRow = remoteSheets[item.key]?.byId.get(String(item.id));
+        if (!remoteRow) {
+          problems.push(`${sheetName(item.key)}:${item.id} 신규 행 미확인`);
+          return;
+        }
+        meaningfulFields(item.key).forEach(field => {
+          if (!sameValue(remoteRow.item[field], item.row[field])) problems.push(`${sheetName(item.key)}:${item.id}.${field} 신규값 불일치`);
+        });
+      });
+
+      expected.deleted.forEach(item => {
+        if (item.alreadyMissing) return;
+        const remote = remoteSheets[item.key];
+        if (!remote) return;
+        const byId = item.id ? remote.byId.get(String(item.id)) : null;
+        const byFallback = !item.id ? findFallbackRemoteRow(item.key, item.baseline, item.baseline, remote) : null;
+        if (byId || byFallback) problems.push(`${sheetName(item.key)}:${item.id || "삭제행"} 삭제 미반영`);
+      });
+
+      if (!problems.length) return { remoteSheets };
+      lastProblems = problems;
+    }
+    throw new Error(`Google Sheets 저장 후 재확인에 실패했습니다. 저장 완료로 처리하지 않았습니다. (${lastProblems.slice(0, 3).join(", ")}${lastProblems.length > 3 ? " 외" : ""})`);
+  }
+
+  function buildVerifiedSnapshot(baseline, remoteSheets, changedKeys) {
+    const snapshot = deepClone(baseline || { weeks: [], tasks: [], kpis: [], criteria: [], decisions: [] });
+    changedKeys.forEach(key => {
+      const rows = remoteSheets[key]?.rows || [];
+      snapshot[key] = rows.map(entry => pick(entry.item, SCHEMA[key]));
+    });
+    return snapshot;
+  }
+
+  function reconcileVerifiedCollections(snapshot, changedKeys) {
+    changedKeys.forEach(key => {
+      const rows = snapshot[key] || [];
+      if (key === "tasks") {
+        state.tasks = normalizeRows(rows, key).filter(task => OWNER_ORDER.includes(task.owner));
+        ensureLocalStableIds(state.tasks, "tasks", "TASK");
+        normalizeTaskTitles();
+      } else if (key === "kpis") {
+        state.kpis = normalizeRows(rows, key).filter(kpi => OWNER_ORDER.includes(kpi.owner));
+        ensureLocalStableIds(state.kpis, "kpis", "KPI");
+      } else if (key === "decisions") {
+        state.decisions = normalizeRows(rows, key);
+        ensureLocalStableIds(state.decisions, "decisions", "DEC");
+      } else if (key === "weeks") {
+        state.weeks = normalizeRows(rows, key);
+      }
+    });
   }
 
   function diffCollection(key, baselineRows, currentRows) {
@@ -2213,20 +2364,36 @@
     return out;
   }
 
-  async function sheetsRootFetch(suffix, options = {}, allowAuthRetry = true) {
+  async function sheetsRootFetch(suffix, options = {}, allowAuthRetry = true, retryCount = 0) {
     if (!state.token) throw new Error("Google 연결이 필요합니다.");
     const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(CONFIG.SPREADSHEET_ID)}${suffix}`;
-    const response = await fetch(url, {
-      ...options,
-      headers: { Authorization: `Bearer ${state.token}`, "Content-Type": "application/json", ...(options.headers || {}) }
-    });
+    let response;
+    try {
+      response = await fetch(url, {
+        ...options,
+        headers: { Authorization: `Bearer ${state.token}`, "Content-Type": "application/json", ...(options.headers || {}) }
+      });
+    } catch (error) {
+      const method = String(options.method || "GET").toUpperCase();
+      if (method === "GET" && retryCount < 2) {
+        await delay(350 * (retryCount + 1));
+        return sheetsRootFetch(suffix, options, allowAuthRetry, retryCount + 1);
+      }
+      throw error;
+    }
     if (response.status === 401) {
       clearGoogleSessionToken();
       state.token = null;
       state.tokenExpiresAt = 0;
       applyModeUi();
-      if (allowAuthRetry && await refreshGoogleTokenSilently()) return sheetsRootFetch(suffix, options, false);
+      if (allowAuthRetry && await refreshGoogleTokenSilently()) return sheetsRootFetch(suffix, options, false, retryCount);
       throw new Error("Google 인증이 만료되었습니다. 상단의 Google 연결 버튼을 한 번 눌러 주세요.");
+    }
+    const method = String(options.method || "GET").toUpperCase();
+    if (!response.ok && method === "GET" && retryCount < 2 && [408, 429, 500, 502, 503, 504].includes(response.status)) {
+      const retryAfter = Number(response.headers.get("Retry-After"));
+      await delay(Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 350 * (retryCount + 1));
+      return sheetsRootFetch(suffix, options, allowAuthRetry, retryCount + 1);
     }
     if (!response.ok) {
       let message = `Google Sheets API 오류 (${response.status})`;
@@ -2347,26 +2514,74 @@
   function renderPresenceStatus() {
     if (!el.activeUsersBadge) return;
     const unique = [...new Set(state.presenceRows.map(row => row.user_email).filter(Boolean))];
-    el.activeUsersBadge.textContent = `접속 ${unique.length || (state.userEmail ? 1 : 0)}명`;
+    const nextText = `접속 ${unique.length || (state.userEmail ? 1 : 0)}명`;
+    if (el.activeUsersBadge.textContent !== nextText) {
+      el.activeUsersBadge.textContent = nextText;
+      el.activeUsersBadge.classList.remove("presence-pulse");
+      requestAnimationFrame(() => el.activeUsersBadge.classList.add("presence-pulse"));
+      window.setTimeout(() => el.activeUsersBadge.classList.remove("presence-pulse"), 420);
+    }
     el.activeUsersBadge.title = unique.length ? unique.join("\n") : "현재 접속자";
   }
 
   function applyPresenceIndicators() {
     document.querySelectorAll("[data-collab-key].remote-editing").forEach(node => {
       node.classList.remove("remote-editing");
+      node.style.removeProperty("--remote-color");
       node.removeAttribute("data-remote-editor");
+      if (node.dataset.originalTitle !== undefined) {
+        node.title = node.dataset.originalTitle;
+        delete node.dataset.originalTitle;
+      }
     });
-    state.presenceRows.filter(row => row.session_id !== state.presenceSessionId && row.entity_type && row.entity_id && row.field).forEach(row => {
+    document.querySelectorAll(".remote-editor-chip").forEach(node => node.remove());
+    document.querySelectorAll(".remote-editor-host").forEach(node => node.classList.remove("remote-editor-host"));
+
+    const activeRows = state.presenceRows.filter(row => row.session_id !== state.presenceSessionId && row.entity_type && row.entity_id && row.field);
+    activeRows.forEach(row => {
       const key = `${row.entity_type}::${row.entity_id}::${row.field}`;
       document.querySelectorAll("[data-collab-key]").forEach(node => {
         const nodeKey = node.dataset.collabKey || "";
         const match = nodeKey === key || (row.entity_type === "task" && nodeKey.startsWith("task::") && nodeKey.endsWith(`::${row.field}`) && nodeKey.split("::")[1].split(",").includes(row.entity_id));
         if (!match) return;
+        const color = collaboratorColor(row.user_email);
         node.classList.add("remote-editing");
+        node.style.setProperty("--remote-color", color);
         node.dataset.remoteEditor = row.user_email;
-        node.title = `${row.user_email} 편집 중`;
+        if (node.dataset.originalTitle === undefined) node.dataset.originalTitle = node.title || "";
+        node.title = `${row.user_email} 작성 중`;
+
+        const host = collaboratorBadgeHost(node);
+        if (!host) return;
+        host.classList.add("remote-editor-host");
+        if ([...host.querySelectorAll(".remote-editor-chip")].some(chip => chip.dataset.sessionId === row.session_id)) return;
+        const chip = document.createElement("span");
+        chip.className = "remote-editor-chip";
+        chip.dataset.sessionId = row.session_id;
+        chip.style.setProperty("--remote-color", color);
+        chip.title = `${row.user_email} 작성 중`;
+        chip.innerHTML = `<span class="remote-editor-dot" aria-hidden="true"></span><span class="remote-editor-name"></span>`;
+        chip.querySelector(".remote-editor-name").textContent = collaboratorLabel(row.user_email);
+        host.appendChild(chip);
       });
     });
+  }
+
+  function collaboratorBadgeHost(node) {
+    return node.closest(".task-title-wrap, .task-cell, td, .project-rail, .period-pane") || node.parentElement;
+  }
+
+  function collaboratorLabel(email) {
+    const text = String(email || "다른 사용자").trim();
+    const local = text.includes("@") ? text.split("@")[0] : text;
+    return `${local || "다른 사용자"} 작성 중`;
+  }
+
+  function collaboratorColor(email) {
+    const palette = ["#44599C", "#0095FF", "#8B6FA8", "#B56A4B", "#2F7D6B", "#B08A3E"];
+    let hash = 0;
+    for (const char of String(email || "")) hash = ((hash << 5) - hash + char.charCodeAt(0)) | 0;
+    return palette[Math.abs(hash) % palette.length];
   }
 
   async function setPresenceEditing(entityType, entityId, field) {
@@ -2392,22 +2607,38 @@
     applyPresenceIndicators();
   }
 
-  async function sheetsFetch(path, options = {}, allowAuthRetry = true) {
+  async function sheetsFetch(path, options = {}, allowAuthRetry = true, retryCount = 0) {
     if (!state.token) throw new Error("Google 연결이 필요합니다.");
     const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(CONFIG.SPREADSHEET_ID)}/${path}`;
-    const response = await fetch(url, {
-      ...options,
-      headers: { Authorization: `Bearer ${state.token}`, "Content-Type": "application/json", ...(options.headers || {}) }
-    });
+    let response;
+    try {
+      response = await fetch(url, {
+        ...options,
+        headers: { Authorization: `Bearer ${state.token}`, "Content-Type": "application/json", ...(options.headers || {}) }
+      });
+    } catch (error) {
+      const method = String(options.method || "GET").toUpperCase();
+      if (method === "GET" && retryCount < 2) {
+        await delay(350 * (retryCount + 1));
+        return sheetsFetch(path, options, allowAuthRetry, retryCount + 1);
+      }
+      throw error;
+    }
     if (response.status === 401) {
       clearGoogleSessionToken();
       state.token = null;
       state.tokenExpiresAt = 0;
       applyModeUi();
       if (allowAuthRetry && await refreshGoogleTokenSilently()) {
-        return sheetsFetch(path, options, false);
+        return sheetsFetch(path, options, false, retryCount);
       }
       throw new Error("Google 인증이 만료되었습니다. 상단의 Google 연결 버튼을 한 번 눌러 주세요.");
+    }
+    const method = String(options.method || "GET").toUpperCase();
+    if (!response.ok && method === "GET" && retryCount < 2 && [408, 429, 500, 502, 503, 504].includes(response.status)) {
+      const retryAfter = Number(response.headers.get("Retry-After"));
+      await delay(Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 350 * (retryCount + 1));
+      return sheetsFetch(path, options, allowAuthRetry, retryCount + 1);
     }
     if (!response.ok) {
       let message = `Google Sheets API 오류 (${response.status})`;
@@ -2548,7 +2779,11 @@
     toast.className = `toast${isError ? " error" : ""}`;
     toast.textContent = message;
     el.toastContainer.appendChild(toast);
-    setTimeout(() => toast.remove(), 3600);
+    requestAnimationFrame(() => toast.classList.add("show"));
+    window.setTimeout(() => {
+      toast.classList.add("closing");
+      window.setTimeout(() => toast.remove(), 220);
+    }, 3400);
   }
   function handleError(error) { console.error(error); showToast(error?.message || String(error), true); setStatus("오류 발생"); }
 

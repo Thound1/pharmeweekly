@@ -1719,3 +1719,226 @@ input:focus, select:focus, textarea:focus {
   background-color: rgba(0,149,255,.045) !important;
 }
 .remote-editing::selection { background: rgba(0,149,255,.18); }
+
+/* ========================================================================
+   v1.4.2 · Verified save + collaborative presence + motion polish
+   ======================================================================== */
+:root {
+  --motion-fast: 120ms;
+  --motion-base: 190ms;
+  --motion-slow: 260ms;
+  --ease-standard: cubic-bezier(.2,.8,.2,1);
+  --ease-emphasized: cubic-bezier(.2,.9,.2,1.08);
+}
+
+html { scroll-behavior: smooth; }
+
+/* 버튼/컨트롤 액션 */
+.button,
+.icon-button,
+.zoom-button,
+.zoom-value,
+.period-add-task,
+.task-menu-button,
+.drag-handle,
+.project-delete-button,
+.decision-edit,
+.icon-close,
+select,
+input,
+textarea {
+  transition:
+    background-color var(--motion-base) var(--ease-standard),
+    border-color var(--motion-base) var(--ease-standard),
+    color var(--motion-base) var(--ease-standard),
+    box-shadow var(--motion-base) var(--ease-standard),
+    transform var(--motion-fast) var(--ease-standard),
+    opacity var(--motion-fast) var(--ease-standard);
+}
+
+.button:active,
+.icon-button:active,
+.zoom-button:active,
+.zoom-value:active,
+.period-add-task:active,
+.task-menu-button:active,
+.project-delete-button:active,
+.icon-close:active {
+  transform: translateY(1px) scale(.975);
+}
+
+.task-field:focus,
+.project-name-input:focus,
+.kpi-actual-input:focus,
+.kpi-note-input:focus,
+.form-grid input:focus,
+.form-grid textarea:focus,
+.form-grid select:focus {
+  outline: none;
+  border-color: #44599C !important;
+  box-shadow: 0 0 0 3px rgba(68,89,156,.12);
+}
+
+.owner-section,
+.project-block,
+.task-card,
+.task-merge-group,
+.kpi-card,
+.decision-card {
+  transition:
+    border-color var(--motion-base) var(--ease-standard),
+    box-shadow var(--motion-base) var(--ease-standard),
+    background-color var(--motion-base) var(--ease-standard),
+    transform var(--motion-base) var(--ease-standard),
+    opacity var(--motion-base) var(--ease-standard);
+}
+
+.project-block:hover { box-shadow: 0 4px 12px rgba(27,31,39,.055); }
+.task-card:hover { transform: translateY(-1px); }
+.task-card.dragging,
+.project-block.dragging {
+  transform: scale(.992);
+  opacity: .42;
+}
+.task-card.drag-over,
+.project-block.drag-over,
+.task-list.drag-over {
+  transition-duration: var(--motion-fast);
+}
+
+/* 저장 중 상태는 화면을 막지 않고 버튼만 미세하게 표시 */
+body.is-saving #saveButton {
+  position: relative;
+  box-shadow: 0 0 0 3px rgba(0,149,255,.10);
+  animation: save-breathe 1.2s ease-in-out infinite;
+}
+@keyframes save-breathe {
+  0%,100% { opacity: 1; }
+  50% { opacity: .76; }
+}
+
+/* 다이얼로그 */
+dialog[open] {
+  animation: dialog-in var(--motion-base) var(--ease-emphasized) both;
+}
+dialog[open]::backdrop {
+  animation: backdrop-in var(--motion-base) ease-out both;
+}
+@keyframes dialog-in {
+  from { opacity: 0; transform: translateY(8px) scale(.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes backdrop-in {
+  from { background: rgba(27,31,39,0); }
+  to { background: rgba(27,31,39,.28); }
+}
+
+/* 토스트 */
+.toast {
+  opacity: 0;
+  transform: translateY(10px) scale(.985);
+  transition:
+    opacity 180ms var(--ease-standard),
+    transform 220ms var(--ease-emphasized);
+}
+.toast.show {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+.toast.closing {
+  opacity: 0;
+  transform: translateY(5px) scale(.985);
+}
+
+/* 현재 접속자 표시 */
+.collaboration-badge {
+  transition:
+    background-color var(--motion-base) var(--ease-standard),
+    border-color var(--motion-base) var(--ease-standard),
+    transform var(--motion-base) var(--ease-emphasized),
+    box-shadow var(--motion-base) var(--ease-standard);
+}
+.collaboration-badge.presence-pulse {
+  animation: presence-pulse 400ms var(--ease-emphasized);
+}
+@keyframes presence-pulse {
+  0% { transform: scale(1); }
+  45% { transform: scale(1.06); box-shadow: 0 0 0 4px rgba(68,89,156,.10); }
+  100% { transform: scale(1); box-shadow: none; }
+}
+
+/* Google Docs/Sheets처럼 '누가 편집 중인지'를 작은 라벨과 색상으로 표시 */
+.remote-editor-host {
+  position: relative !important;
+  overflow: visible !important;
+}
+.remote-editing {
+  position: relative;
+  outline: none !important;
+  box-shadow:
+    inset 3px 0 0 var(--remote-color, #44599C),
+    inset 0 -1px 0 color-mix(in srgb, var(--remote-color, #44599C) 52%, transparent) !important;
+  background-color: color-mix(in srgb, var(--remote-color, #44599C) 5%, #fff) !important;
+}
+.remote-editor-chip {
+  --remote-color: #44599C;
+  position: absolute;
+  z-index: 25;
+  top: -13px;
+  right: 5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: min(150px, 70%);
+  height: 20px;
+  padding: 0 7px 0 5px;
+  border: 1px solid color-mix(in srgb, var(--remote-color) 55%, #fff);
+  border-radius: 999px;
+  color: #fff;
+  background: var(--remote-color);
+  box-shadow: 0 4px 10px rgba(27,31,39,.13);
+  font-size: 10px;
+  font-weight: 750;
+  line-height: 1;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(4px) scale(.96);
+  animation: remote-chip-in 180ms var(--ease-emphasized) forwards;
+}
+.remote-editor-dot {
+  width: 5px;
+  height: 5px;
+  flex: 0 0 5px;
+  border-radius: 50%;
+  background: #fff;
+  opacity: .92;
+}
+.remote-editor-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@keyframes remote-chip-in {
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* 날짜처럼 좁은 셀에서는 라벨이 바깥으로 자연스럽게 걸치도록 유지 */
+.task-date-cell .remote-editor-chip,
+td .remote-editor-chip { right: 2px; }
+
+/* 드래그 프리뷰도 갑작스럽게 튀지 않도록 */
+.drag-preview {
+  transition: opacity var(--motion-fast) ease-out, transform var(--motion-fast) ease-out;
+  box-shadow: 0 14px 32px rgba(27,31,39,.18) !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
