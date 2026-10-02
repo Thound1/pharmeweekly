@@ -190,7 +190,124 @@
     ].forEach(id => { el[id] = document.getElementById(id); });
   }
 
+  let inlineEditorGuardTarget = null;
+
+  function isInlineEditorControl(target) {
+    return target instanceof HTMLElement && target.matches(
+      ".task-field, .project-name-input, .kpi-actual-input, .kpi-note-input"
+    );
+  }
+
+  function isTextLikeEditor(target) {
+    if (target instanceof HTMLTextAreaElement) return true;
+    if (!(target instanceof HTMLInputElement)) return false;
+    return ["text", "search", "email", "url", "tel", "password"].includes((target.type || "text").toLowerCase());
+  }
+
+  function installInlineEditorKeyboardGuard() {
+    // 메인 편집칸에 포커스가 있는 동안 키 입력이 페이지/브라우저 액션으로 새는 것을 막습니다.
+    document.addEventListener("focusin", event => {
+      if (isInlineEditorControl(event.target)) inlineEditorGuardTarget = event.target;
+    }, true);
+
+    // 마우스/터치로 편집칸 밖을 명시적으로 누른 경우에는 정상적인 포커스 이탈로 인정합니다.
+    document.addEventListener("pointerdown", event => {
+      if (!inlineEditorGuardTarget) return;
+      if (event.target === inlineEditorGuardTarget || inlineEditorGuardTarget.contains?.(event.target)) return;
+      inlineEditorGuardTarget = null;
+    }, true);
+
+    document.addEventListener("keydown", event => {
+      if (event.isComposing || event.key === "Process") return;
+
+      const target = event.target;
+      if (isInlineEditorControl(target)) {
+        inlineEditorGuardTarget = target;
+        // Tab은 사용자가 다음 입력칸으로 이동하려는 명시적 액션이므로 그대로 둡니다.
+        if (event.key === "Tab") return;
+        // 입력칸 안에서 발생한 키 이벤트가 업무보드나 상위 화면 단축키로 전파되지 않도록 합니다.
+        event.stopPropagation();
+        return;
+      }
+
+      const editor = inlineEditorGuardTarget;
+      if (!editor || !editor.isConnected || editor.disabled || editor.readOnly) return;
+
+      // Tab/Escape는 의도적인 편집 종료/이동으로 취급합니다.
+      if (event.key === "Tab" || event.key === "Escape") {
+        inlineEditorGuardTarget = null;
+        return;
+      }
+
+      const isPrintable = event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey;
+      const recoverableKey = isPrintable || [
+        " ", "Space", "Spacebar", "Enter", "Backspace", "Delete", "PageUp", "PageDown",
+        "Home", "End", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"
+      ].includes(event.key);
+      if (!recoverableKey) return;
+
+      // 포커스가 순간적으로 body/버튼 등으로 빠진 상태에서 Space, Backspace 등이
+      // 페이지 스크롤/뒤로가기/버튼 실행으로 처리되지 않도록 원래 편집칸으로 회수합니다.
+      const scrollX = window.scrollX;
+      const scrollY = window.scrollY;
+      event.preventDefault();
+      event.stopPropagation();
+      window.clearTimeout(state.autoSaveTimer);
+      state.autoSaveTimer = null;
+
+      try { editor.focus({ preventScroll: true }); }
+      catch (_) { editor.focus(); }
+
+      if (isTextLikeEditor(editor) && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        applyRecoveredEditorKey(editor, event);
+      }
+
+      requestAnimationFrame(() => {
+        if (window.scrollX !== scrollX || window.scrollY !== scrollY) window.scrollTo(scrollX, scrollY);
+      });
+    }, true);
+  }
+
+  function applyRecoveredEditorKey(editor, event) {
+    const start = Number.isInteger(editor.selectionStart) ? editor.selectionStart : String(editor.value || "").length;
+    const end = Number.isInteger(editor.selectionEnd) ? editor.selectionEnd : start;
+    const value = String(editor.value || "");
+    let replacement = null;
+    let from = start;
+    let to = end;
+
+    if (event.key === "Enter") {
+      if (!(editor instanceof HTMLTextAreaElement)) return;
+      replacement = "\n";
+    } else if (event.key === "Backspace") {
+      if (start === end) {
+        if (start <= 0) return;
+        from = start - 1;
+      }
+      replacement = "";
+    } else if (event.key === "Delete") {
+      if (start === end) {
+        if (end >= value.length) return;
+        to = end + 1;
+      }
+      replacement = "";
+    } else if ([" ", "Space", "Spacebar"].includes(event.key)) {
+      replacement = " ";
+    } else if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      replacement = event.key;
+    } else {
+      // 방향키/Home/End/PageUp/PageDown은 페이지를 움직이지 않게 하고 편집칸만 복원합니다.
+      // 다음 키 입력부터 브라우저의 정상 caret 이동 동작을 그대로 사용합니다.
+      return;
+    }
+
+    if (typeof editor.setRangeText !== "function") return;
+    editor.setRangeText(replacement, from, to, "end");
+    editor.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+
   function bindEvents() {
+    installInlineEditorKeyboardGuard();
     el.connectButton.addEventListener("click", connectGoogle);
     el.rememberLoginCheckbox?.addEventListener("change", () => {
       state.rememberGoogleAccount = Boolean(el.rememberLoginCheckbox.checked);
