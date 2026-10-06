@@ -1944,7 +1944,7 @@ td .remote-editor-chip { right: 2px; }
 }
 
 
-/* v1.5.0 · PAMECON Shimeji Easter Egg */
+/* v1.5.1 · PAMECON Shimeji Quality Pass */
 .brand-mark.pamecon-trigger {
   cursor: pointer;
   user-select: none;
@@ -1976,8 +1976,8 @@ td .remote-editor-chip { right: 2px; }
 .pamecon-character {
   position: absolute;
   left: 0;
-  bottom: -28px;
-  width: 108px;
+  bottom: -10px;
+  width: 132px;
   opacity: 0;
   pointer-events: none;
   will-change: transform;
@@ -1989,10 +1989,11 @@ td .remote-editor-chip { right: 2px; }
   display: block;
   width: 100%;
   height: auto;
-  transform-origin: center bottom;
+  transform-origin: 50% 92%;
   user-select: none;
   -webkit-user-drag: none;
-  filter: drop-shadow(0 5px 4px rgba(27,31,39,.17));
+  image-rendering: auto;
+  filter: drop-shadow(0 4px 3px rgba(27,31,39,.16));
 }
 .pamecon-context-menu {
   position: fixed;
@@ -2040,7 +2041,7 @@ td .remote-editor-chip { right: 2px; }
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 @media (max-width: 720px) {
-  .pamecon-character { width: 88px; bottom: -24px; }
+  .pamecon-character { width: 108px; bottom: -8px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .brand-mark.pamecon-trigger.pamecon-secret-pulse { animation: none !important; }

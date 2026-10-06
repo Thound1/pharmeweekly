@@ -1,0 +1,14 @@
+PAMECON v1.5.1 프레임 검증
+
+- appear: 8 frames / PASS
+- walk: 6 frames / PASS
+- idle: 8 frames / PASS
+- sit: 8 frames / PASS
+- jump: 8 frames / PASS
+- stretch: 8 frames / PASS
+- sleep: 8 frames / PASS
+- exit: 8 frames / PASS
+
+총 프레임: 62
+전체 결과: PASS
+모든 프레임은 512×512 RGBA PNG입니다.

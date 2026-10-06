@@ -34,7 +34,7 @@
   const PAMECON_CLICK_WINDOW_MS = 2200;
   const PAMECON_ASSET_BASE = "assets/pamecon";
   const PAMECON_FRAME_COUNTS = { appear: 8, walk: 6, idle: 8, sit: 8, jump: 8, stretch: 8, sleep: 8, exit: 8 };
-  const PAMECON_FRAME_MS = { appear: 105, walk: 118, idle: 165, sit: 150, jump: 105, stretch: 145, sleep: 180, exit: 105 };
+  const PAMECON_FRAME_MS = { appear: 95, walk: 105, idle: 180, sit: 145, jump: 95, stretch: 135, sleep: 220, exit: 95 };
 
   const SCHEMA = {
     weeks: ["week_id", "start_date", "end_date", "created_at", "updated_at", "updated_by"],
@@ -2977,7 +2977,7 @@
   }
 
   function pameconAsset(action, frameIndex) {
-    return `${PAMECON_ASSET_BASE}/${action}/${String(frameIndex + 1).padStart(2, "0")}.png?v=1.5.0`;
+    return `${PAMECON_ASSET_BASE}/${action}/${String(frameIndex + 1).padStart(2, "0")}.png?v=1.5.1`;
   }
 
   function preloadPameconActions(actions) {
@@ -3068,10 +3068,11 @@
 
   function pameconSequence(action) {
     const frames = Array.from({ length: PAMECON_FRAME_COUNTS[action] || 1 }, (_, index) => index);
-    if (action === "idle") return [...frames, 6, 5, 4, 3, 2, 1, 0];
-    if (action === "sit") return [0, 1, 2, 3, 4, 5, 6, 7, 7, 7, 6, 5, 4, 3, 2, 1, 0];
-    if (action === "stretch") return [...frames, 7, 6, 5, 4, 3, 2, 1, 0];
-    if (action === "sleep") return [...frames, 7, 7, 7, 7, 7, 6, 5, 4, 3, 2, 1, 0];
+    // 동작 전환 시 시선/자세가 갑자기 튀지 않도록 짧은 왕복 시퀀스를 사용합니다.
+    if (action === "idle") return [0, 1, 2, 1, 0, 3, 0, 6, 7, 6, 0, 4, 5, 4, 0];
+    if (action === "sit") return [0, 1, 2, 3, 4, 4, 4, 3, 2, 1, 0];
+    if (action === "stretch") return [0, 1, 2, 3, 4, 5, 6, 7, 6, 5, 4, 3, 2, 1, 0];
+    if (action === "sleep") return [0, 1, 2, 3, 4, 5, 6, 7, 7, 7, 7, 7, 6, 5, 4, 3, 2, 1, 0];
     return frames;
   }
 
@@ -3114,7 +3115,7 @@
 
     if (pamecon.action === "walk") {
       if (!editing) {
-        const speed = 42;
+        const speed = 48;
         pamecon.x += pamecon.direction * speed * (delta / 1000);
         const maxX = Math.max(8, window.innerWidth - getPameconVisualWidth() - 8);
         if (pamecon.x <= 8) {
