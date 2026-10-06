@@ -1942,3 +1942,107 @@ td .remote-editor-chip { right: 2px; }
     scroll-behavior: auto !important;
   }
 }
+
+
+/* v1.5.0 · PAMECON Shimeji Easter Egg */
+.brand-mark.pamecon-trigger {
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: transform 180ms var(--ease-emphasized), box-shadow 180ms var(--ease-standard);
+}
+@media (hover: hover) and (pointer: fine) {
+  .brand-mark.pamecon-trigger:hover { transform: translateY(-1px); }
+}
+.brand-mark.pamecon-trigger.pamecon-secret-pulse {
+  animation: pamecon-secret-pulse 430ms var(--ease-emphasized);
+}
+@keyframes pamecon-secret-pulse {
+  0% { transform: rotate(0) scale(1); }
+  25% { transform: rotate(-7deg) scale(1.06); }
+  55% { transform: rotate(7deg) scale(1.08); }
+  100% { transform: rotate(0) scale(1); }
+}
+
+.pamecon-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 550;
+  overflow: hidden;
+  pointer-events: none;
+  visibility: hidden;
+}
+.pamecon-layer.visible { visibility: visible; }
+.pamecon-character {
+  position: absolute;
+  left: 0;
+  bottom: -28px;
+  width: 108px;
+  opacity: 0;
+  pointer-events: none;
+  will-change: transform;
+  transition: opacity 180ms ease-out;
+  contain: layout style paint;
+}
+.pamecon-layer.visible .pamecon-character { opacity: 1; }
+.pamecon-sprite {
+  display: block;
+  width: 100%;
+  height: auto;
+  transform-origin: center bottom;
+  user-select: none;
+  -webkit-user-drag: none;
+  filter: drop-shadow(0 5px 4px rgba(27,31,39,.17));
+}
+.pamecon-context-menu {
+  position: fixed;
+  z-index: 12000;
+  min-width: 158px;
+  padding: 6px;
+  border: 1px solid rgba(182,166,133,.58);
+  border-radius: 10px;
+  color: #F3EFE3;
+  background: rgba(27,31,39,.97);
+  box-shadow: 0 12px 30px rgba(27,31,39,.24);
+  backdrop-filter: blur(8px);
+  pointer-events: auto;
+  animation: pamecon-menu-in 120ms ease-out;
+}
+.pamecon-context-menu[hidden] { display: none !important; }
+.pamecon-menu-title {
+  padding: 5px 9px 7px;
+  color: #B6A685;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .09em;
+}
+.pamecon-menu-item {
+  width: 100%;
+  min-height: 34px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 7px;
+  color: #fff;
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+.pamecon-menu-item:hover,
+.pamecon-menu-item:focus-visible {
+  outline: none;
+  background: rgba(68,89,156,.34);
+}
+@keyframes pamecon-menu-in {
+  from { opacity: 0; transform: translateY(4px) scale(.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@media (max-width: 720px) {
+  .pamecon-character { width: 88px; bottom: -24px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .brand-mark.pamecon-trigger.pamecon-secret-pulse { animation: none !important; }
+  .pamecon-character { transition: none !important; }
+}
