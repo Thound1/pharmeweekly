@@ -1944,7 +1944,7 @@ td .remote-editor-chip { right: 2px; }
 }
 
 
-/* v1.5.1 · PAMECON Shimeji Quality Pass */
+/* v1.5.2 · PAMECON Shimeji Variation / Throw / Clone */
 .brand-mark.pamecon-trigger {
   cursor: pointer;
   user-select: none;
@@ -1976,20 +1976,31 @@ td .remote-editor-chip { right: 2px; }
 .pamecon-character {
   position: absolute;
   left: 0;
-  bottom: -10px;
+  top: 0;
   width: 132px;
-  opacity: 0;
-  pointer-events: none;
+  aspect-ratio: 1 / 1;
+  opacity: 1;
+  pointer-events: auto;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
   will-change: transform;
-  transition: opacity 180ms ease-out;
   contain: layout style paint;
+  transition: filter 140ms ease, opacity 160ms ease;
 }
-.pamecon-layer.visible .pamecon-character { opacity: 1; }
+.pamecon-character.dragging {
+  z-index: 8;
+  cursor: grabbing;
+  filter: drop-shadow(0 10px 8px rgba(27,31,39,.18));
+}
 .pamecon-sprite {
   display: block;
   width: 100%;
-  height: auto;
-  transform-origin: 50% 92%;
+  height: 100%;
+  object-fit: contain;
+  transform-origin: 50% 88%;
+  pointer-events: none;
   user-select: none;
   -webkit-user-drag: none;
   image-rendering: auto;
@@ -1998,7 +2009,7 @@ td .remote-editor-chip { right: 2px; }
 .pamecon-context-menu {
   position: fixed;
   z-index: 12000;
-  min-width: 158px;
+  min-width: 184px;
   padding: 6px;
   border: 1px solid rgba(182,166,133,.58);
   border-radius: 10px;
@@ -2030,20 +2041,40 @@ td .remote-editor-chip { right: 2px; }
   font-weight: 700;
   text-align: left;
   cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.pamecon-menu-item + .pamecon-menu-item {
+  margin-top: 2px;
+  border-top: 1px solid rgba(255,255,255,.07);
 }
 .pamecon-menu-item:hover,
 .pamecon-menu-item:focus-visible {
   outline: none;
   background: rgba(68,89,156,.34);
 }
+.pamecon-menu-item:disabled {
+  color: rgba(255,255,255,.42);
+  cursor: not-allowed;
+  background: transparent;
+}
+.pamecon-menu-count {
+  flex: none;
+  color: #B6A685;
+  font-size: 10px;
+  font-weight: 800;
+}
 @keyframes pamecon-menu-in {
   from { opacity: 0; transform: translateY(4px) scale(.97); }
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 @media (max-width: 720px) {
-  .pamecon-character { width: 108px; bottom: -8px; }
+  .pamecon-character { width: 108px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .brand-mark.pamecon-trigger.pamecon-secret-pulse { animation: none !important; }
   .pamecon-character { transition: none !important; }
 }
+

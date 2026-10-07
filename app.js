@@ -35,6 +35,11 @@
   const PAMECON_ASSET_BASE = "assets/pamecon";
   const PAMECON_FRAME_COUNTS = { appear: 8, walk: 6, idle: 8, sit: 8, jump: 8, stretch: 8, sleep: 8, exit: 8 };
   const PAMECON_FRAME_MS = { appear: 95, walk: 105, idle: 180, sit: 145, jump: 95, stretch: 135, sleep: 220, exit: 95 };
+  const PAMECON_MAX_INSTANCES = 5;
+  const PAMECON_SLEEP_MIN_MS = 5000;
+  const PAMECON_SLEEP_MAX_MS = 16000;
+  const PAMECON_THROW_GRAVITY = 1850;
+  const PAMECON_THROW_MAX_SPEED = 1450;
 
   const SCHEMA = {
     weeks: ["week_id", "start_date", "end_date", "created_at", "updated_at", "updated_by"],
@@ -124,22 +129,12 @@
   const pamecon = {
     triggerClicks: [],
     root: null,
-    character: null,
-    sprite: null,
     menu: null,
+    cloneButton: null,
     hideButton: null,
-    visible: false,
-    action: "",
-    sequence: [],
-    sequenceIndex: 0,
-    frameElapsed: 0,
-    actionElapsed: 0,
-    walkDuration: 0,
-    x: 0,
-    direction: 1,
-    lastTimestamp: 0,
-    rafId: null,
-    pendingHide: false
+    menuTargetId: null,
+    instances: [],
+    nextId: 1
   };
 
   const el = {};
@@ -2939,24 +2934,18 @@
       trigger.classList.add("pamecon-secret-pulse");
       window.setTimeout(() => trigger.classList.remove("pamecon-secret-pulse"), 460);
 
-      if (pamecon.visible) {
-        setPameconAction("jump");
+      const active = activePameconInstances();
+      if (active.length) {
+        active.forEach(instance => {
+          if (!instance.dragging && !instance.physicsActive && !instance.pendingHide) {
+            setPameconAction(instance, "jump");
+          }
+        });
         return;
       }
       try { localStorage.removeItem(PAMECON_HIDDEN_KEY); } catch (_) {}
       activatePamecon().catch(error => console.warn("PAMECON activation failed", error));
     });
-
-    document.addEventListener("contextmenu", event => {
-      if (!pamecon.visible || !pamecon.character) return;
-      const rect = pamecon.character.getBoundingClientRect();
-      const hit = event.clientX >= rect.left && event.clientX <= rect.right
-        && event.clientY >= rect.top && event.clientY <= rect.bottom;
-      if (!hit) return;
-      event.preventDefault();
-      event.stopPropagation();
-      openPameconMenu(event.clientX, event.clientY);
-    }, true);
 
     document.addEventListener("pointerdown", event => {
       if (!pamecon.menu || pamecon.menu.hidden) return;
@@ -2965,9 +2954,11 @@
     }, true);
 
     window.addEventListener("resize", () => {
-      if (!pamecon.visible) return;
-      clampPameconPosition();
-      renderPameconPosition();
+      activePameconInstances().forEach(instance => {
+        clampPameconPosition(instance);
+        if (!instance.dragging && !instance.physicsActive) instance.y = getPameconGroundY(instance);
+        renderPameconPosition(instance);
+      });
       closePameconMenu();
     }, { passive: true });
 
@@ -2977,7 +2968,7 @@
   }
 
   function pameconAsset(action, frameIndex) {
-    return `${PAMECON_ASSET_BASE}/${action}/${String(frameIndex + 1).padStart(2, "0")}.png?v=1.5.1`;
+    return `${PAMECON_ASSET_BASE}/${action}/${String(frameIndex + 1).padStart(2, "0")}.png?v=1.5.2`;
   }
 
   function preloadPameconActions(actions) {
@@ -2994,6 +2985,14 @@
     return Promise.all(jobs);
   }
 
+  function activePameconInstances() {
+    return pamecon.instances.filter(instance => instance.visible);
+  }
+
+  function findPameconInstance(id) {
+    return pamecon.instances.find(instance => instance.id === id) || null;
+  }
+
   function ensurePameconDom() {
     if (pamecon.root?.isConnected) return;
 
@@ -3002,170 +3001,303 @@
     rootNode.className = "pamecon-layer";
     rootNode.setAttribute("aria-hidden", "true");
 
-    const character = document.createElement("div");
-    character.className = "pamecon-character";
-    const sprite = document.createElement("img");
-    sprite.className = "pamecon-sprite";
-    sprite.alt = "";
-    sprite.draggable = false;
-    character.appendChild(sprite);
-    rootNode.appendChild(character);
-
     const menu = document.createElement("div");
     menu.className = "pamecon-context-menu";
     menu.hidden = true;
     menu.setAttribute("role", "menu");
     menu.innerHTML = `
       <div class="pamecon-menu-title">PAMECON</div>
-      <button type="button" class="pamecon-menu-item" role="menuitem">파메콘 숨기기</button>
+      <button type="button" class="pamecon-menu-item pamecon-clone-item" role="menuitem">
+        <span>파메콘 복사하기</span><span class="pamecon-menu-count"></span>
+      </button>
+      <button type="button" class="pamecon-menu-item pamecon-hide-item" role="menuitem">이 파메콘 숨기기</button>
     `;
 
     document.body.appendChild(rootNode);
     document.body.appendChild(menu);
 
-    const hideButton = menu.querySelector(".pamecon-menu-item");
-    hideButton.addEventListener("click", () => {
+    const cloneButton = menu.querySelector(".pamecon-clone-item");
+    const hideButton = menu.querySelector(".pamecon-hide-item");
+    cloneButton.addEventListener("click", () => {
+      const target = findPameconInstance(pamecon.menuTargetId);
       closePameconMenu();
-      requestPameconHide();
+      if (!target) return;
+      if (activePameconInstances().length >= PAMECON_MAX_INSTANCES) {
+        showToast(`파메콘은 최대 ${PAMECON_MAX_INSTANCES}마리까지 함께 놀 수 있습니다.`);
+        return;
+      }
+      activatePamecon({ cloneFrom: target }).catch(error => console.warn("PAMECON clone failed", error));
+    });
+    hideButton.addEventListener("click", () => {
+      const target = findPameconInstance(pamecon.menuTargetId);
+      closePameconMenu();
+      if (target) requestPameconHide(target);
     });
 
     pamecon.root = rootNode;
-    pamecon.character = character;
-    pamecon.sprite = sprite;
     pamecon.menu = menu;
+    pamecon.cloneButton = cloneButton;
     pamecon.hideButton = hideButton;
   }
 
-  async function activatePamecon() {
+  function createPameconInstance(options = {}) {
     ensurePameconDom();
-    await preloadPameconActions(["appear", "walk", "idle"]);
-    if (pamecon.visible) return;
+    if (activePameconInstances().length >= PAMECON_MAX_INSTANCES) return null;
 
-    pamecon.pendingHide = false;
-    pamecon.visible = true;
+    const character = document.createElement("div");
+    character.className = "pamecon-character";
+    character.dataset.pameconId = String(pamecon.nextId);
+    character.setAttribute("aria-hidden", "true");
+
+    const sprite = document.createElement("img");
+    sprite.className = "pamecon-sprite";
+    sprite.alt = "";
+    sprite.draggable = false;
+    character.appendChild(sprite);
+    pamecon.root.appendChild(character);
+
+    const instance = {
+      id: pamecon.nextId++,
+      character,
+      sprite,
+      visible: true,
+      action: "",
+      sequence: [],
+      sequenceIndex: 0,
+      frameElapsed: 0,
+      actionElapsed: 0,
+      walkDuration: 0,
+      direction: options.cloneFrom?.direction || (Math.random() < .5 ? -1 : 1),
+      x: 0,
+      y: 0,
+      lastTimestamp: 0,
+      rafId: null,
+      pendingHide: false,
+      jumpRepeatsRemaining: 0,
+      sleepPhase: "",
+      sleepHoldDuration: 0,
+      sleepHoldElapsed: 0,
+      sleepBreathElapsed: 0,
+      sleepBreathFrame: 7,
+      dragging: false,
+      pointerId: null,
+      grabOffsetX: 0,
+      grabOffsetY: 0,
+      dragSamples: [],
+      physicsActive: false,
+      vx: 0,
+      vy: 0
+    };
+    pamecon.instances.push(instance);
+
+    bindPameconPointerEvents(instance);
     pamecon.root.classList.add("visible");
-    pamecon.direction = Math.random() < .5 ? -1 : 1;
-    const width = getPameconVisualWidth();
-    pamecon.x = Math.max(8, Math.min(window.innerWidth - width - 8, Math.round(window.innerWidth * (.64 + Math.random() * .2))));
-    clampPameconPosition();
-    renderPameconPosition();
-    setPameconAction("appear");
-    startPameconAnimation();
+    return instance;
+  }
+
+  function bindPameconPointerEvents(instance) {
+    const character = instance.character;
+    character.addEventListener("contextmenu", event => {
+      if (!instance.visible || instance.pendingHide) return;
+      event.preventDefault();
+      event.stopPropagation();
+      openPameconMenu(instance, event.clientX, event.clientY);
+    });
+    character.addEventListener("pointerdown", event => beginPameconDrag(instance, event));
+    character.addEventListener("pointermove", event => movePameconDrag(instance, event));
+    character.addEventListener("pointerup", event => endPameconDrag(instance, event));
+    character.addEventListener("pointercancel", event => endPameconDrag(instance, event, true));
+  }
+
+  async function activatePamecon(options = {}) {
+    ensurePameconDom();
+    if (activePameconInstances().length >= PAMECON_MAX_INSTANCES) return null;
+    await preloadPameconActions(["appear", "walk", "idle"]);
+
+    const instance = createPameconInstance(options);
+    if (!instance) return null;
+
+    const width = getPameconVisualWidth(instance);
+    const maxX = Math.max(8, window.innerWidth - width - 8);
+    if (options.cloneFrom) {
+      const offset = options.cloneFrom.direction >= 0 ? 72 : -72;
+      instance.x = Math.max(8, Math.min(maxX, options.cloneFrom.x + offset));
+    } else {
+      instance.x = Math.max(8, Math.min(maxX, Math.round(window.innerWidth * (.58 + Math.random() * .28))));
+    }
+    instance.y = getPameconGroundY(instance);
+    renderPameconPosition(instance);
+    setPameconAction(instance, "appear");
+    startPameconAnimation(instance);
     preloadPameconActions(["sit", "jump", "stretch", "sleep", "exit"]).catch(() => {});
+    try { localStorage.removeItem(PAMECON_HIDDEN_KEY); } catch (_) {}
+    return instance;
   }
 
-  function startPameconAnimation() {
-    if (pamecon.rafId) return;
-    pamecon.lastTimestamp = 0;
-    pamecon.rafId = window.requestAnimationFrame(tickPamecon);
+  function startPameconAnimation(instance) {
+    if (!instance || instance.rafId || !instance.visible) return;
+    instance.rafId = window.requestAnimationFrame(timestampValue => tickPamecon(instance, timestampValue));
   }
 
-  function stopPameconAnimation() {
-    if (pamecon.rafId) window.cancelAnimationFrame(pamecon.rafId);
-    pamecon.rafId = null;
-    pamecon.lastTimestamp = 0;
+  function stopPameconAnimation(instance) {
+    if (!instance) return;
+    if (instance.rafId) window.cancelAnimationFrame(instance.rafId);
+    instance.rafId = null;
+    instance.lastTimestamp = 0;
   }
 
   function pameconSequence(action) {
     const frames = Array.from({ length: PAMECON_FRAME_COUNTS[action] || 1 }, (_, index) => index);
-    // 동작 전환 시 시선/자세가 갑자기 튀지 않도록 짧은 왕복 시퀀스를 사용합니다.
     if (action === "idle") return [0, 1, 2, 1, 0, 3, 0, 6, 7, 6, 0, 4, 5, 4, 0];
     if (action === "sit") return [0, 1, 2, 3, 4, 4, 4, 3, 2, 1, 0];
     if (action === "stretch") return [0, 1, 2, 3, 4, 5, 6, 7, 6, 5, 4, 3, 2, 1, 0];
-    if (action === "sleep") return [0, 1, 2, 3, 4, 5, 6, 7, 7, 7, 7, 7, 6, 5, 4, 3, 2, 1, 0];
+    if (action === "sleep") return frames;
     return frames;
   }
 
-  function setPameconAction(action) {
-    if (!pamecon.visible || !PAMECON_FRAME_COUNTS[action]) return;
-    pamecon.action = action;
-    pamecon.sequence = pameconSequence(action);
-    pamecon.sequenceIndex = 0;
-    pamecon.frameElapsed = 0;
-    pamecon.actionElapsed = 0;
-    pamecon.walkDuration = action === "walk" ? 2600 + Math.random() * 3900 : 0;
-    renderPameconFrame(pamecon.sequence[0] || 0);
+  function setPameconAction(instance, action, options = {}) {
+    if (!instance?.visible || !PAMECON_FRAME_COUNTS[action] || instance.pendingHide && action !== "exit") return;
+    instance.action = action;
+    instance.sequence = pameconSequence(action);
+    instance.sequenceIndex = 0;
+    instance.frameElapsed = 0;
+    instance.actionElapsed = 0;
+    instance.walkDuration = action === "walk" ? 2600 + Math.random() * 3900 : 0;
+    instance.jumpRepeatsRemaining = action === "jump"
+      ? Math.max(1, Math.min(5, Number(options.repeats) || (1 + Math.floor(Math.random() * 5))))
+      : 0;
+    instance.sleepPhase = action === "sleep" ? "enter" : "";
+    instance.sleepHoldDuration = action === "sleep"
+      ? PAMECON_SLEEP_MIN_MS + Math.random() * (PAMECON_SLEEP_MAX_MS - PAMECON_SLEEP_MIN_MS)
+      : 0;
+    instance.sleepHoldElapsed = 0;
+    instance.sleepBreathElapsed = 0;
+    instance.sleepBreathFrame = 7;
+    if (!instance.dragging && !instance.physicsActive) instance.y = getPameconGroundY(instance);
+    renderPameconPosition(instance);
+    renderPameconFrame(instance, instance.sequence[0] || 0);
   }
 
-  function tickPamecon(timestampValue) {
-    pamecon.rafId = null;
-    if (!pamecon.visible) return;
+  function tickPamecon(instance, timestampValue) {
+    instance.rafId = null;
+    if (!instance.visible) return;
 
-    if (!pamecon.lastTimestamp) pamecon.lastTimestamp = timestampValue;
-    const delta = Math.min(80, Math.max(0, timestampValue - pamecon.lastTimestamp));
-    pamecon.lastTimestamp = timestampValue;
+    if (!instance.lastTimestamp) instance.lastTimestamp = timestampValue;
+    const delta = Math.min(80, Math.max(0, timestampValue - instance.lastTimestamp));
+    instance.lastTimestamp = timestampValue;
+
+    if (instance.dragging) {
+      startPameconAnimation(instance);
+      return;
+    }
+
+    if (instance.physicsActive) {
+      tickPameconPhysics(instance, delta);
+      if (instance.visible) startPameconAnimation(instance);
+      return;
+    }
 
     if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
-      if (pamecon.action === "exit" || pamecon.pendingHide) {
-        finalizePameconHide();
+      if (instance.action === "exit" || instance.pendingHide) {
+        finalizePameconHide(instance);
         return;
       }
-      if (pamecon.action === "appear") setPameconAction("idle");
-      renderPameconFrame(0);
-      pamecon.rafId = window.requestAnimationFrame(tickPamecon);
+      if (instance.action === "appear") setPameconAction(instance, "idle");
+      renderPameconFrame(instance, 0);
+      if (instance.visible) startPameconAnimation(instance);
       return;
     }
 
     const editing = isPameconEditingLocked();
-    if (editing && pamecon.action === "walk") setPameconAction("idle");
+    if (editing && instance.action === "walk") setPameconAction(instance, "idle");
 
-    pamecon.frameElapsed += delta;
-    pamecon.actionElapsed += delta;
-    const interval = PAMECON_FRAME_MS[pamecon.action] || 150;
+    instance.frameElapsed += delta;
+    instance.actionElapsed += delta;
+    const interval = PAMECON_FRAME_MS[instance.action] || 150;
 
-    if (pamecon.action === "walk") {
+    if (instance.action === "walk") {
       if (!editing) {
         const speed = 48;
-        pamecon.x += pamecon.direction * speed * (delta / 1000);
-        const maxX = Math.max(8, window.innerWidth - getPameconVisualWidth() - 8);
-        if (pamecon.x <= 8) {
-          pamecon.x = 8;
-          pamecon.direction = 1;
-        } else if (pamecon.x >= maxX) {
-          pamecon.x = maxX;
-          pamecon.direction = -1;
+        instance.x += instance.direction * speed * (delta / 1000);
+        const maxX = Math.max(8, window.innerWidth - getPameconVisualWidth(instance) - 8);
+        if (instance.x <= 8) {
+          instance.x = 8;
+          instance.direction = 1;
+        } else if (instance.x >= maxX) {
+          instance.x = maxX;
+          instance.direction = -1;
         }
-        renderPameconPosition();
+        instance.y = getPameconGroundY(instance);
+        renderPameconPosition(instance);
       }
 
-      if (pamecon.frameElapsed >= interval) {
-        pamecon.frameElapsed %= interval;
-        pamecon.sequenceIndex = (pamecon.sequenceIndex + 1) % PAMECON_FRAME_COUNTS.walk;
-        renderPameconFrame(pamecon.sequenceIndex);
+      if (instance.frameElapsed >= interval) {
+        instance.frameElapsed %= interval;
+        instance.sequenceIndex = (instance.sequenceIndex + 1) % PAMECON_FRAME_COUNTS.walk;
+        renderPameconFrame(instance, instance.sequenceIndex);
       }
-
-      if (pamecon.actionElapsed >= pamecon.walkDuration) chooseNextPameconAction();
-    } else if (pamecon.frameElapsed >= interval) {
-      pamecon.frameElapsed %= interval;
-      pamecon.sequenceIndex += 1;
-      if (pamecon.sequenceIndex >= pamecon.sequence.length) {
-        if (pamecon.action === "exit") {
-          finalizePameconHide();
+      if (instance.actionElapsed >= instance.walkDuration) chooseNextPameconAction(instance);
+    } else if (instance.action === "sleep" && instance.sleepPhase === "hold") {
+      instance.sleepHoldElapsed += delta;
+      instance.sleepBreathElapsed += delta;
+      if (instance.sleepBreathElapsed >= 820) {
+        instance.sleepBreathElapsed %= 820;
+        instance.sleepBreathFrame = instance.sleepBreathFrame === 7 ? 6 : 7;
+        renderPameconFrame(instance, instance.sleepBreathFrame);
+      }
+      if (instance.sleepHoldElapsed >= instance.sleepHoldDuration) {
+        instance.sleepPhase = "wake";
+        instance.sequence = [6, 5, 4, 3, 2, 1, 0];
+        instance.sequenceIndex = 0;
+        instance.frameElapsed = 0;
+        renderPameconFrame(instance, instance.sequence[0]);
+      }
+    } else if (instance.frameElapsed >= interval) {
+      instance.frameElapsed %= interval;
+      instance.sequenceIndex += 1;
+      if (instance.sequenceIndex >= instance.sequence.length) {
+        if (instance.action === "exit") {
+          finalizePameconHide(instance);
           return;
         }
-        chooseNextPameconAction();
+        if (instance.action === "sleep" && instance.sleepPhase === "enter") {
+          instance.sleepPhase = "hold";
+          instance.sleepHoldElapsed = 0;
+          instance.sleepBreathElapsed = 0;
+          instance.sequenceIndex = instance.sequence.length - 1;
+          renderPameconFrame(instance, 7);
+        } else if (instance.action === "sleep" && instance.sleepPhase === "wake") {
+          chooseNextPameconAction(instance);
+        } else if (instance.action === "jump" && instance.jumpRepeatsRemaining > 1) {
+          instance.jumpRepeatsRemaining -= 1;
+          instance.sequenceIndex = 0;
+          instance.frameElapsed = -70;
+          renderPameconFrame(instance, instance.sequence[0]);
+        } else {
+          chooseNextPameconAction(instance);
+        }
       } else {
-        renderPameconFrame(pamecon.sequence[pamecon.sequenceIndex]);
+        renderPameconFrame(instance, instance.sequence[instance.sequenceIndex]);
       }
     }
 
-    if (pamecon.visible) pamecon.rafId = window.requestAnimationFrame(tickPamecon);
+    if (instance.visible) startPameconAnimation(instance);
   }
 
-  function chooseNextPameconAction() {
-    if (!pamecon.visible || pamecon.pendingHide) return;
+  function chooseNextPameconAction(instance) {
+    if (!instance?.visible || instance.pendingHide || instance.dragging || instance.physicsActive) return;
     if (isPameconEditingLocked()) {
-      setPameconAction("idle");
+      setPameconAction(instance, "idle");
       return;
     }
 
     const roll = Math.random();
-    if (roll < .47) setPameconAction("walk");
-    else if (roll < .69) setPameconAction("idle");
-    else if (roll < .79) setPameconAction("sit");
-    else if (roll < .88) setPameconAction("jump");
-    else if (roll < .95) setPameconAction("stretch");
-    else setPameconAction("sleep");
+    if (roll < .45) setPameconAction(instance, "walk");
+    else if (roll < .66) setPameconAction(instance, "idle");
+    else if (roll < .76) setPameconAction(instance, "sit");
+    else if (roll < .88) setPameconAction(instance, "jump");
+    else if (roll < .95) setPameconAction(instance, "stretch");
+    else setPameconAction(instance, "sleep");
   }
 
   function isPameconEditingLocked() {
@@ -3175,59 +3307,237 @@
     return active.matches("input, textarea, select, [contenteditable='true']");
   }
 
-  function renderPameconFrame(frameIndex) {
-    if (!pamecon.sprite || !pamecon.action) return;
-    const safeIndex = Math.max(0, Math.min((PAMECON_FRAME_COUNTS[pamecon.action] || 1) - 1, frameIndex));
-    pamecon.sprite.src = pameconAsset(pamecon.action, safeIndex);
-    pamecon.sprite.style.transform = `scaleX(${pamecon.direction})`;
-    pamecon.character.dataset.action = pamecon.action;
+  function renderPameconFrame(instance, frameIndex) {
+    if (!instance?.sprite || !instance.action) return;
+    const safeIndex = Math.max(0, Math.min((PAMECON_FRAME_COUNTS[instance.action] || 1) - 1, frameIndex));
+    instance.sprite.src = pameconAsset(instance.action, safeIndex);
+    instance.sprite.style.transform = `scaleX(${instance.direction})`;
+    instance.character.dataset.action = instance.action;
+    instance.character.dataset.frame = String(safeIndex + 1);
   }
 
-  function getPameconVisualWidth() {
-    if (!pamecon.character) return 108;
-    return pamecon.character.getBoundingClientRect().width || 108;
+  function getPameconVisualWidth(instance) {
+    if (!instance?.character) return 132;
+    return instance.character.getBoundingClientRect().width || 132;
   }
 
-  function clampPameconPosition() {
-    const maxX = Math.max(8, window.innerWidth - getPameconVisualWidth() - 8);
-    pamecon.x = Math.max(8, Math.min(maxX, Number.isFinite(pamecon.x) ? pamecon.x : maxX * .7));
+  function getPameconVisualHeight(instance) {
+    if (!instance?.character) return 132;
+    return instance.character.getBoundingClientRect().height || getPameconVisualWidth(instance);
   }
 
-  function renderPameconPosition() {
-    if (!pamecon.character) return;
-    pamecon.character.style.transform = `translate3d(${Math.round(pamecon.x)}px, 0, 0)`;
+  function getPameconGroundY(instance) {
+    return Math.max(8, window.innerHeight - getPameconVisualHeight(instance) + 10);
   }
 
-  function openPameconMenu(clientX, clientY) {
-    if (!pamecon.menu) return;
+  function clampPameconPosition(instance) {
+    if (!instance) return;
+    const maxX = Math.max(8, window.innerWidth - getPameconVisualWidth(instance) - 8);
+    const maxY = getPameconGroundY(instance);
+    instance.x = Math.max(8, Math.min(maxX, Number.isFinite(instance.x) ? instance.x : maxX * .7));
+    instance.y = Math.max(8, Math.min(maxY, Number.isFinite(instance.y) ? instance.y : maxY));
+  }
+
+  function renderPameconPosition(instance) {
+    if (!instance?.character) return;
+    instance.character.style.transform = `translate3d(${Math.round(instance.x)}px, ${Math.round(instance.y)}px, 0)`;
+  }
+
+  function beginPameconDrag(instance, event) {
+    if (!instance?.visible || instance.pendingHide || event.button !== 0 || !event.isPrimary) return;
+    event.preventDefault();
+    event.stopPropagation();
+    closePameconMenu();
+
+    const rect = instance.character.getBoundingClientRect();
+    instance.dragging = true;
+    instance.physicsActive = false;
+    instance.vx = 0;
+    instance.vy = 0;
+    instance.pointerId = event.pointerId;
+    instance.grabOffsetX = event.clientX - rect.left;
+    instance.grabOffsetY = event.clientY - rect.top;
+    instance.dragSamples = [{ t: performance.now(), x: event.clientX, y: event.clientY }];
+    instance.action = "jump";
+    instance.sequence = pameconSequence("jump");
+    instance.sequenceIndex = 3;
+    instance.frameElapsed = 0;
+    instance.character.classList.add("dragging");
+    try { instance.character.setPointerCapture(event.pointerId); } catch (_) {}
+    renderPameconFrame(instance, 3);
+    startPameconAnimation(instance);
+  }
+
+  function movePameconDrag(instance, event) {
+    if (!instance?.dragging || instance.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+
+    const width = getPameconVisualWidth(instance);
+    const height = getPameconVisualHeight(instance);
+    const maxX = Math.max(8, window.innerWidth - width - 8);
+    const maxY = Math.max(8, window.innerHeight - height + 10);
+    const nextX = Math.max(8, Math.min(maxX, event.clientX - instance.grabOffsetX));
+    const nextY = Math.max(8, Math.min(maxY, event.clientY - instance.grabOffsetY));
+    if (Math.abs(nextX - instance.x) > 1) instance.direction = nextX >= instance.x ? 1 : -1;
+    instance.x = nextX;
+    instance.y = nextY;
+    renderPameconPosition(instance);
+    renderPameconFrame(instance, 3);
+
+    const now = performance.now();
+    instance.dragSamples.push({ t: now, x: event.clientX, y: event.clientY });
+    instance.dragSamples = instance.dragSamples.filter(sample => now - sample.t <= 140).slice(-6);
+  }
+
+  function endPameconDrag(instance, event, cancelled = false) {
+    if (!instance?.dragging || instance.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    try { instance.character.releasePointerCapture(event.pointerId); } catch (_) {}
+    instance.dragging = false;
+    instance.pointerId = null;
+    instance.character.classList.remove("dragging");
+
+    if (cancelled) {
+      instance.physicsActive = false;
+      clampPameconPosition(instance);
+      setPameconAction(instance, "idle");
+      return;
+    }
+
+    const samples = instance.dragSamples;
+    const newest = samples[samples.length - 1];
+    const oldest = samples.find(sample => newest && newest.t - sample.t >= 45) || samples[0];
+    let vx = 0;
+    let vy = 0;
+    if (newest && oldest && newest !== oldest) {
+      const dt = Math.max(16, newest.t - oldest.t) / 1000;
+      vx = (newest.x - oldest.x) / dt;
+      vy = (newest.y - oldest.y) / dt;
+    }
+    instance.dragSamples = [];
+    vx = Math.max(-PAMECON_THROW_MAX_SPEED, Math.min(PAMECON_THROW_MAX_SPEED, vx));
+    vy = Math.max(-PAMECON_THROW_MAX_SPEED, Math.min(PAMECON_THROW_MAX_SPEED, vy));
+
+    if (Math.hypot(vx, vy) < 170) {
+      instance.physicsActive = false;
+      clampPameconPosition(instance);
+      if (instance.y >= getPameconGroundY(instance) - 2) instance.y = getPameconGroundY(instance);
+      renderPameconPosition(instance);
+      setPameconAction(instance, "idle");
+      return;
+    }
+
+    instance.physicsActive = true;
+    instance.vx = vx;
+    instance.vy = vy;
+    instance.action = "jump";
+    if (Math.abs(vx) > 20) instance.direction = vx >= 0 ? 1 : -1;
+    renderPameconFrame(instance, vy < 0 ? 3 : 5);
+    startPameconAnimation(instance);
+  }
+
+  function tickPameconPhysics(instance, delta) {
+    const dt = Math.max(.001, delta / 1000);
+    const width = getPameconVisualWidth(instance);
+    const maxX = Math.max(8, window.innerWidth - width - 8);
+    const groundY = getPameconGroundY(instance);
+
+    instance.vy += PAMECON_THROW_GRAVITY * dt;
+    instance.x += instance.vx * dt;
+    instance.y += instance.vy * dt;
+
+    if (instance.x <= 8) {
+      instance.x = 8;
+      instance.vx = Math.abs(instance.vx) * .58;
+    } else if (instance.x >= maxX) {
+      instance.x = maxX;
+      instance.vx = -Math.abs(instance.vx) * .58;
+    }
+    if (instance.y <= 8) {
+      instance.y = 8;
+      instance.vy = Math.abs(instance.vy) * .45;
+    }
+
+    let landed = false;
+    if (instance.y >= groundY) {
+      instance.y = groundY;
+      if (Math.abs(instance.vy) > 260) {
+        instance.vy = -Math.abs(instance.vy) * .30;
+        instance.vx *= .76;
+      } else {
+        instance.vy = 0;
+        instance.vx *= Math.pow(.08, dt);
+        landed = Math.abs(instance.vx) < 55;
+      }
+    }
+
+    if (Math.abs(instance.vx) > 24) instance.direction = instance.vx >= 0 ? 1 : -1;
+    let frame = 4;
+    if (instance.vy < -380) frame = 2;
+    else if (instance.vy < -80) frame = 3;
+    else if (instance.vy < 260) frame = 4;
+    else if (instance.y < groundY - 12) frame = 5;
+    else frame = 6;
+    renderPameconFrame(instance, frame);
+    renderPameconPosition(instance);
+
+    if (landed) {
+      instance.physicsActive = false;
+      instance.vx = 0;
+      instance.vy = 0;
+      instance.y = groundY;
+      renderPameconPosition(instance);
+      setPameconAction(instance, isPameconEditingLocked() ? "idle" : (Math.random() < .55 ? "idle" : "walk"));
+    }
+  }
+
+  function openPameconMenu(instance, clientX, clientY) {
+    if (!pamecon.menu || !instance?.visible) return;
+    pamecon.menuTargetId = instance.id;
+    const count = activePameconInstances().length;
+    const countNode = pamecon.menu.querySelector(".pamecon-menu-count");
+    if (countNode) countNode.textContent = `${count}/${PAMECON_MAX_INSTANCES}`;
+    if (pamecon.cloneButton) {
+      pamecon.cloneButton.disabled = count >= PAMECON_MAX_INSTANCES;
+      pamecon.cloneButton.title = count >= PAMECON_MAX_INSTANCES ? `최대 ${PAMECON_MAX_INSTANCES}마리까지 생성할 수 있습니다.` : "";
+    }
     pamecon.menu.hidden = false;
     pamecon.menu.style.left = `${Math.max(8, clientX)}px`;
     pamecon.menu.style.top = `${Math.max(8, clientY)}px`;
     const rect = pamecon.menu.getBoundingClientRect();
     if (rect.right > window.innerWidth - 8) pamecon.menu.style.left = `${Math.max(8, window.innerWidth - rect.width - 8)}px`;
     if (rect.bottom > window.innerHeight - 8) pamecon.menu.style.top = `${Math.max(8, window.innerHeight - rect.height - 8)}px`;
-    pamecon.hideButton?.focus({ preventScroll: true });
   }
 
   function closePameconMenu() {
     if (pamecon.menu) pamecon.menu.hidden = true;
+    pamecon.menuTargetId = null;
   }
 
-  function requestPameconHide() {
-    if (!pamecon.visible || pamecon.pendingHide) return;
-    pamecon.pendingHide = true;
-    try { localStorage.setItem(PAMECON_HIDDEN_KEY, "1"); } catch (_) {}
-    setPameconAction("exit");
+  function requestPameconHide(instance) {
+    if (!instance?.visible || instance.pendingHide) return;
+    instance.pendingHide = true;
+    instance.dragging = false;
+    instance.physicsActive = false;
+    instance.character.classList.remove("dragging");
+    setPameconAction(instance, "exit");
   }
 
-  function finalizePameconHide() {
-    closePameconMenu();
-    pamecon.visible = false;
-    pamecon.pendingHide = false;
-    pamecon.action = "";
-    if (pamecon.root) pamecon.root.classList.remove("visible");
-    if (pamecon.sprite) pamecon.sprite.removeAttribute("src");
-    stopPameconAnimation();
+  function finalizePameconHide(instance) {
+    if (!instance) return;
+    if (pamecon.menuTargetId === instance.id) closePameconMenu();
+    instance.visible = false;
+    instance.pendingHide = false;
+    instance.action = "";
+    stopPameconAnimation(instance);
+    instance.character?.remove();
+    pamecon.instances = pamecon.instances.filter(item => item !== instance);
+    if (!activePameconInstances().length) {
+      pamecon.root?.classList.remove("visible");
+      try { localStorage.setItem(PAMECON_HIDDEN_KEY, "1"); } catch (_) {}
+    }
   }
 
   function showToast(message, isError = false) {
